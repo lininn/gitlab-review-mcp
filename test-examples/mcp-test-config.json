@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "gitlab-review-mcp-test": {
+      "command": "node",
+      "args": [
+        "/Users/lininn/soft/gitlab-review-mcp/dist/index.js",
+        "--api-base-url=https://api.github.com",
+        "--api-token=your_test_token_here",
+        "--timeout=10000",
+        "--max-retries=2"
+      ],
+      "alwaysAllow": [
+        "fetch_pull_request",
+        "fetch_code_diff",
+        "add_review_comment",
+        "analyze_code_quality",
+        "get_supported_languages",
+        "get_language_rules",
+        "get_server_config"
+      ]
+    }
+  }
+}

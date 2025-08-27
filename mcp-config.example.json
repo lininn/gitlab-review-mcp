@@ -1,0 +1,67 @@
+{
+  "mcpServers": {
+    "gitlab-review-mcp-github": {
+      "command": "node",
+      "args": [
+        "/Users/lininn/soft/gitlab-review-mcp/dist/index.js",
+        "--api-base-url=https://api.github.com",
+        "--api-token=your_github_token_here",
+        "--timeout=30000"
+      ],
+      "alwaysAllow": [
+        "fetch_pull_request",
+        "fetch_code_diff",
+        "add_review_comment",
+        "analyze_code_quality",
+        "get_repository_info",
+        "analyze_files_batch",
+        "get_pull_request_files",
+        "get_supported_languages",
+        "get_language_rules",
+        "get_server_config"
+      ]
+    },
+    "gitlab-review-mcp-gitlab": {
+      "command": "node",
+      "args": [
+        "/Users/lininn/soft/gitlab-review-mcp/dist/index.js",
+        "--api-base-url=https://gitlab.com/api/v4",
+        "--api-token=your_gitlab_token_here",
+        "--timeout=30000"
+      ],
+      "alwaysAllow": [
+        "fetch_pull_request",
+        "fetch_code_diff",
+        "add_review_comment",
+        "analyze_code_quality",
+        "get_repository_info",
+        "analyze_files_batch",
+        "get_pull_request_files",
+        "get_supported_languages",
+        "get_language_rules",
+        "get_server_config"
+      ]
+    },
+    "gitlab-review-mcp-npx": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "gitlab-review-mcp",
+        "--api-base-url=https://api.github.com",
+        "--api-token=your_github_token_here"
+      ],
+      "alwaysAllow": [
+        "fetch_pull_request",
+        "fetch_code_diff",
+        "add_review_comment",
+        "analyze_code_quality",
+        "get_repository_info",
+        "analyze_files_batch",
+        "get_pull_request_files",
+        "get_supported_languages",
+        "get_language_rules",
+        "get_server_config"
+      ]
+    }
+  }
+}

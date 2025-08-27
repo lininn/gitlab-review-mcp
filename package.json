@@ -1,0 +1,64 @@
+{
+  "name": "gitlab-review-mcp",
+  "version": "1.0.0",
+  "description": "Node.js MCP server for GitLab code review operations with AI integration support",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "clean": "rm -rf dist",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "node test-examples/test-server.js"
+  },
+  "bin": {
+    "gitlab-review-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "env.example",
+    "mcp-config.example.json"
+  ],
+  "keywords": [
+    "mcp",
+    "code-review",
+    "model-context-protocol",
+    "ai",
+    "claude",
+    "github",
+    "gitlab",
+    "code-quality",
+    "static-analysis",
+    "pull-request",
+    "merge-request"
+  ],
+  "author": "Code Review MCP Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lininn/gitlab-review-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lininn/gitlab-review-mcp/issues"
+  },
+  "homepage": "https://github.com/lininn/gitlab-review-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.1.0",
+    "commander": "^12.0.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

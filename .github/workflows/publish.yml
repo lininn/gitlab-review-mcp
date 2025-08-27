@@ -1,0 +1,63 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Build project
+        run: npm run build
+        
+      - name: Run tests
+        run: npm test
+        
+      - name: Publish to NPM
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            ## What's Changed
+            
+            This release includes:
+            - Bug fixes and improvements
+            - New features and enhancements
+            
+            ## Installation
+            
+            ```bash
+            npm install -g gitlab-review-mcp
+            ```
+            
+            ## Documentation
+            
+            - [README](https://github.com/${{ github.repository }}#readme)
+            - [中文文档](https://github.com/${{ github.repository }}/blob/main/README-zh.md)
+            - [快速开始](https://github.com/${{ github.repository }}/blob/main/快速开始.md)
+            
+          draft: false
+          prerelease: false
