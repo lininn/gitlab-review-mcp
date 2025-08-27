@@ -41,5 +41,5 @@ coverage/
 .nyc_output/
 
 # npm package lock files
-package-lock.json
+# package-lock.json  # 注释掉，确保依赖版本一致性
 yarn.lock
