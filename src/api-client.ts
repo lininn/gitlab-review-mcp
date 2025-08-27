@@ -174,8 +174,9 @@ export class ApiClient {
   // Health check
   async healthCheck(): Promise<boolean> {
     try {
-      // Try a simple request to test connectivity
-      await this.request('', { timeout: 5000 });
+      // Try a simple request to test connectivity - use a valid GitLab API endpoint
+      // GitLab API v4 has a version endpoint that should always be available
+      await this.request('version', { timeout: 5000 });
       return true;
     } catch (error) {
       console.warn('API health check failed:', error instanceof Error ? error.message : String(error));
