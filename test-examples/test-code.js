@@ -1,36 +1,32 @@
 // Test JavaScript code for code analysis
-console.log("This is a debug statement");
+import fs from 'fs'; // Unused import
+import path from 'path';
 
-var oldVariable = "should use let or const";
+function main() {
+    // TODO: Add proper error handling
+    console.log("This should use a proper logger");
 
-function longFunctionNameThatExceedsRecommendedLineLengthAndShouldBeBrokenIntoSmallerParts() {
-    // TODO: Refactor this function
+    // Very long line that exceeds common recommendations and should be refactored
+    const veryLongVariableName = "This is a very long string that demonstrates a line length issue in JavaScript code";
+
+    // Multiple console.log statements
+    console.log("Debug 1");
+    console.log("Debug 2");
+    console.log("Debug 3");
+
+    // FIXME: This function is too complex
     if (true) {
-        console.log("Nested console.log");
-        eval("dangerous code"); // This is a security issue
+        if (true) {
+            if (true) {
+                console.log("Deeply nested code");
+            }
+        }
     }
+
+    // Trailing whitespace   
+    const result = "value";   
+
+    return result;
 }
 
-// Missing return type
-function calculateSum(a, b) {
-    return a + b;
-}
-
-// Arrow function without proper spacing
-const arrowFunc = ()=>{
-    return "test";
-};
-
-// Multiple issues on one line
-var x=1;console.log(x);eval("test");
-
-// Trailing whitespace issues    
-const test = "value";    
-
-// Very long line that exceeds the maximum recommended line length of 120 characters and should be refactored into smaller parts
-const longVariableName = "This is a very long string that demonstrates a line length issue";
-
-// More console statements
-console.log("Debug 1");
-console.log("Debug 2");
-console.log("Debug 3");
+main();

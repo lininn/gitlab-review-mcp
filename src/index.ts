@@ -11,8 +11,7 @@ import {
 import { Command } from 'commander';
 import { config } from 'dotenv';
 import axios, { AxiosResponse } from 'axios';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { CodeAnalyzer } from './code-analyzer.js';
 import { ApiClient } from './api-client.js';
 import { CodeAnalysisResult, ApiRequestOptions } from './types.js';
@@ -20,8 +19,6 @@ import { CodeAnalysisResult, ApiRequestOptions } from './types.js';
 // Load environment variables
 config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // Configuration interface
 interface ServerConfig {
@@ -688,11 +685,11 @@ class CodeReviewMCPServer {
 // CLI setup
 async function main() {
   const program = new Command();
-  
+
   program
     .name('node-code-review-mcp')
     .description('Node.js MCP server for code review operations')
-    .version('1.0.0')
+    .version('1.0.5')
     .option('--api-base-url <url>', 'API base URL')
     .option('--api-token <token>', 'API token for authentication')
     .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
@@ -714,11 +711,9 @@ async function main() {
 }
 
 // Run the server
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  });
-}
+main().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
 
 export { CodeReviewMCPServer, ServerConfig };
