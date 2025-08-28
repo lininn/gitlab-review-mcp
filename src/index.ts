@@ -12,12 +12,29 @@ import { Command } from 'commander';
 import { config } from 'dotenv';
 import axios, { AxiosResponse } from 'axios';
 import { join } from 'path';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 import { CodeAnalyzer } from './code-analyzer.js';
 import { ApiClient } from './api-client.js';
 import { CodeAnalysisResult, ApiRequestOptions } from './types.js';
 
 // Load environment variables
 config();
+
+// Get current file directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Read package.json to get version
+let packageVersion = '1.0.16';
+try {
+  const packagePath = join(__dirname, '../package.json');
+  const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
+  packageVersion = packageJson.version;
+} catch (error) {
+  console.warn('Could not read package.json version, using default:', packageVersion);
+}
 
 
 // Configuration interface
@@ -55,7 +72,7 @@ class CodeReviewMCPServer {
     this.server = new Server(
       {
         name: 'node-code-review-mcp',
-        version: '1.0.0',
+        version: packageVersion,
       },
       {
         capabilities: {
@@ -663,7 +680,7 @@ class CodeReviewMCPServer {
       ...apiInfo,
       supportedLanguages: this.codeAnalyzer.getSupportedLanguages(),
       healthStatus: isHealthy ? 'healthy' : 'unhealthy',
-      version: '1.0.0',
+      version: packageVersion,
     };
 
     return {
@@ -689,7 +706,7 @@ async function main() {
   program
     .name('node-code-review-mcp')
     .description('Node.js MCP server for code review operations')
-    .version('1.0.5')
+    .version(packageVersion)
     .option('--api-base-url <url>', 'API base URL')
     .option('--api-token <token>', 'API token for authentication')
     .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
