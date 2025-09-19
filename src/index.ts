@@ -15,9 +15,10 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { execSync } from 'child_process';
 import { CodeAnalyzer } from './code-analyzer.js';
 import { ApiClient } from './api-client.js';
-import { CodeAnalysisResult, ApiRequestOptions } from './types.js';
+import { CodeAnalysisResult, ApiRequestOptions, CreateMergeRequestOptions, MergeRequestResult, GitBranchInfo, GitRemoteInfo, ProjectInfo } from './types.js';
 
 // Load environment variables
 config();
@@ -317,6 +318,87 @@ class CodeReviewMCPServer {
               properties: {},
             },
           },
+          {
+            name: 'create_merge_request',
+            description: 'Create a new GitLab merge request from a source branch',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                projectId: {
+                  type: 'string',
+                  description: 'GitLab project ID or path (e.g., "12345" or "group/project")',
+                },
+                sourceBranch: {
+                  type: 'string',
+                  description: 'Source branch name (e.g., "feature/new-feature")',
+                },
+                targetBranch: {
+                  type: 'string',
+                  description: 'Target branch name (defaults to "main")',
+                  default: 'main',
+                },
+                title: {
+                  type: 'string',
+                  description: 'Merge request title (auto-generated from branch name if not provided)',
+                },
+                description: {
+                  type: 'string',
+                  description: 'Merge request description',
+                },
+                assigneeId: {
+                  type: 'number',
+                  description: 'User ID to assign the merge request to',
+                },
+                reviewerIds: {
+                  type: 'array',
+                  items: { type: 'number' },
+                  description: 'Array of user IDs to request reviews from',
+                },
+                deleteSourceBranch: {
+                  type: 'boolean',
+                  description: 'Whether to delete source branch when MR is merged',
+                  default: false,
+                },
+                squash: {
+                  type: 'boolean',
+                  description: 'Whether to squash commits when merging',
+                  default: false,
+                },
+              },
+              required: ['projectId', 'sourceBranch'],
+            },
+          },
+          {
+            name: 'get_current_branch',
+            description: 'Get current Git branch and repository information',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Working directory path (defaults to current directory)',
+                },
+              },
+            },
+          },
+          {
+            name: 'get_project_info',
+            description: 'Get current GitLab project information from Git remotes',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Working directory path (defaults to current directory)',
+                },
+                remoteName: {
+                  type: 'string',
+                  description: 'Git remote name (defaults to "origin")',
+                  default: 'origin',
+                },
+              },
+            },
+          },
         ],
       };
     });
@@ -346,6 +428,12 @@ class CodeReviewMCPServer {
             return await this.getPullRequestFiles(args);
           case 'get_server_config':
             return await this.getServerConfig();
+          case 'create_merge_request':
+            return await this.createMergeRequest(args);
+          case 'get_current_branch':
+            return await this.getCurrentBranch(args);
+          case 'get_project_info':
+            return await this.getProjectInfo(args);
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -691,6 +779,360 @@ class CodeReviewMCPServer {
         },
       ],
     };
+  }
+
+  private async createMergeRequest(args: any) {
+    const {
+      projectId,
+      sourceBranch,
+      targetBranch = 'main',
+      title,
+      description,
+      assigneeId,
+      reviewerIds,
+      deleteSourceBranch = false,
+      squash = false,
+    } = args;
+
+    // Auto-generate title from branch name if not provided
+    const mrTitle = title || this.generateMRTitle(sourceBranch);
+
+    // Prepare the request data
+    const requestData: any = {
+      source_branch: sourceBranch,
+      target_branch: targetBranch,
+      title: mrTitle,
+    };
+
+    if (description) {
+      requestData.description = description;
+    }
+
+    if (assigneeId) {
+      requestData.assignee_id = assigneeId;
+    }
+
+    if (reviewerIds && reviewerIds.length > 0) {
+      requestData.reviewer_ids = reviewerIds;
+    }
+
+    if (deleteSourceBranch) {
+      requestData.remove_source_branch = true;
+    }
+
+    if (squash) {
+      requestData.squash = true;
+    }
+
+    try {
+      // Create the merge request using GitLab API
+      const endpoint = `projects/${encodeURIComponent(projectId)}/merge_requests`;
+      const response = await this.makeApiRequest(endpoint, {
+        method: 'POST',
+        data: requestData,
+      });
+
+      const mrData: MergeRequestResult = response.data;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              mergeRequest: {
+                id: mrData.id,
+                web_url: mrData.web_url,
+                title: mrData.title,
+                state: mrData.state,
+                source_branch: mrData.source_branch,
+                target_branch: mrData.target_branch,
+                author: mrData.author,
+              },
+              message: `🎉 Merge request created successfully!`,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('Failed to create merge request:', error);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+              message: `❌ Failed to create merge request`,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  }
+
+  private generateMRTitle(sourceBranch: string): string {
+    // Extract feature name from branch name (similar to the script logic)
+    let title = sourceBranch;
+    
+    // Remove common prefixes
+    if (title.startsWith('feature/')) {
+      title = title.replace('feature/', '');
+    } else if (title.startsWith('feat/')) {
+      title = title.replace('feat/', '');
+    } else if (title.startsWith('bugfix/')) {
+      title = title.replace('bugfix/', '');
+      return `fix: ${title}`;
+    } else if (title.startsWith('hotfix/')) {
+      title = title.replace('hotfix/', '');
+      return `fix: ${title}`;
+    } else if (title.startsWith('docs/')) {
+      title = title.replace('docs/', '');
+      return `docs: ${title}`;
+    } else if (title.startsWith('refactor/')) {
+      title = title.replace('refactor/', '');
+      return `refactor: ${title}`;
+    }
+    
+    // Convert kebab-case or snake_case to readable title
+    title = title
+      .replace(/[-_]/g, ' ')
+      .replace(/\b\w/g, l => l.toUpperCase());
+    
+    return `feat: ${title}`;
+  }
+
+  private async getCurrentBranch(args: any) {
+    const { workingDirectory = process.cwd() } = args;
+
+    try {
+      const branchInfo = this.executeGitCommand('get_current_branch', workingDirectory);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(branchInfo, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('Failed to get current branch:', error);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+              isGitRepository: false,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  }
+
+  private async getProjectInfo(args: any) {
+    const { workingDirectory = process.cwd(), remoteName = 'origin' } = args;
+
+    try {
+      const projectInfo = this.executeGitCommand('get_project_info', workingDirectory, remoteName);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(projectInfo, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('Failed to get project info:', error);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+              isGitlabProject: false,
+              remotes: [],
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  }
+
+  private executeGitCommand(command: string, workingDirectory: string, ...args: string[]): any {
+    const originalCwd = process.cwd();
+    
+    try {
+      // Change to the working directory
+      process.chdir(workingDirectory);
+      
+      switch (command) {
+        case 'get_current_branch':
+          return this.getBranchInfo();
+        case 'get_project_info':
+          return this.getGitProjectInfo(args[0] || 'origin');
+        default:
+          throw new Error(`Unknown git command: ${command}`);
+      }
+    } finally {
+      // Always restore original working directory
+      process.chdir(originalCwd);
+    }
+  }
+
+  private getBranchInfo(): GitBranchInfo {
+    try {
+      // Check if it's a git repository
+      execSync('git rev-parse --git-dir', { stdio: 'pipe' });
+      
+      // Get current branch
+      const currentBranch = execSync('git branch --show-current', { 
+        encoding: 'utf8', 
+        stdio: 'pipe' 
+      }).trim();
+      
+      // Get all branches
+      const allBranchesOutput = execSync('git branch -a', { 
+        encoding: 'utf8', 
+        stdio: 'pipe' 
+      });
+      
+      const allBranches = allBranchesOutput
+        .split('\n')
+        .map(branch => branch.replace(/^\s*\*?\s*/, '').trim())
+        .filter(branch => branch && !branch.startsWith('remotes/origin/HEAD'))
+        .map(branch => branch.replace(/^remotes\/origin\//, ''));
+      
+      // Remove duplicates and current branch marker
+      const uniqueBranches = [...new Set(allBranches)].filter(Boolean);
+      
+      // Get repository root
+      const repositoryRoot = execSync('git rev-parse --show-toplevel', {
+        encoding: 'utf8',
+        stdio: 'pipe'
+      }).trim();
+      
+      return {
+        currentBranch,
+        allBranches: uniqueBranches,
+        isGitRepository: true,
+        repositoryRoot,
+      };
+    } catch (error) {
+      return {
+        currentBranch: '',
+        allBranches: [],
+        isGitRepository: false,
+      };
+    }
+  }
+
+  private getGitProjectInfo(remoteName: string): ProjectInfo {
+    try {
+      // Check if it's a git repository
+      execSync('git rev-parse --git-dir', { stdio: 'pipe' });
+      
+      // Get remote URLs
+      const remotesOutput = execSync('git remote -v', { 
+        encoding: 'utf8', 
+        stdio: 'pipe' 
+      });
+      
+      const remotes: GitRemoteInfo[] = [];
+      const remoteLines = remotesOutput.split('\n').filter(line => line.trim());
+      
+      for (const line of remoteLines) {
+        const match = line.match(/^(\w+)\s+(.+?)\s+\((\w+)\)$/);
+        if (match) {
+          const [, name, url, type] = match;
+          let remote = remotes.find(r => r.name === name);
+          if (!remote) {
+            remote = { name, url };
+            remotes.push(remote);
+          }
+          if (type === 'fetch') {
+            remote.fetch = url;
+          } else if (type === 'push') {
+            remote.push = url;
+          }
+        }
+      }
+      
+      // Find the specified remote
+      const targetRemote = remotes.find(r => r.name === remoteName);
+      if (!targetRemote) {
+        return {
+          remotes,
+          isGitlabProject: false,
+        };
+      }
+      
+      // Parse GitLab project info from remote URL
+      const gitlabInfo = this.parseGitlabRemoteUrl(targetRemote.url);
+      
+      return {
+        ...gitlabInfo,
+        remotes,
+        isGitlabProject: gitlabInfo.projectId !== undefined,
+      };
+    } catch (error) {
+      return {
+        remotes: [],
+        isGitlabProject: false,
+      };
+    }
+  }
+
+  private parseGitlabRemoteUrl(url: string): Partial<ProjectInfo> {
+    try {
+      // Common GitLab URL patterns:
+      // https://gitlab.com/group/project.git
+      // git@gitlab.com:group/project.git
+      // https://gitlab.example.com/group/subgroup/project.git
+      
+      let cleanUrl = url.replace(/\.git$/, '');
+      let gitlabUrl = '';
+      let projectPath = '';
+      
+      // Handle SSH format (git@hostname:path)
+      const sshMatch = cleanUrl.match(/^git@([^:]+):(.+)$/);
+      if (sshMatch) {
+        const [, hostname, path] = sshMatch;
+        gitlabUrl = `https://${hostname}`;
+        projectPath = path;
+      } else {
+        // Handle HTTPS format
+        const httpsMatch = cleanUrl.match(/^https?:\/\/([^\/]+)\/(.+)$/);
+        if (httpsMatch) {
+          const [, hostname, path] = httpsMatch;
+          gitlabUrl = `https://${hostname}`;
+          projectPath = path;
+        }
+      }
+      
+      if (!projectPath) {
+        return {};
+      }
+      
+      // For GitLab API, we can use the path directly as project ID
+      // or try to determine the numeric ID if needed
+      return {
+        projectId: encodeURIComponent(projectPath),
+        projectPath,
+        gitlabUrl,
+      };
+    } catch (error) {
+      return {};
+    }
   }
 
   async run(): Promise<void> {

@@ -77,7 +77,10 @@ Add to your MCP client configuration (e.g., Claude Desktop):
         "fetch_code_diff",
         "add_review_comment",
         "analyze_code_quality",
-        "get_server_config"
+        "get_server_config",
+        "create_merge_request",
+        "get_current_branch",
+        "get_project_info"
       ]
     }
   }
@@ -100,7 +103,10 @@ Add to your MCP client configuration (e.g., Claude Desktop):
         "fetch_code_diff",
         "add_review_comment",
         "analyze_code_quality",
-        "get_server_config"
+        "get_server_config",
+        "create_merge_request",
+        "get_current_branch",
+        "get_project_info"
       ]
     }
   }
@@ -124,7 +130,10 @@ Add to your MCP client configuration (e.g., Claude Desktop):
         "fetch_code_diff",
         "add_review_comment",
         "analyze_code_quality",
-        "get_server_config"
+        "get_server_config",
+        "create_merge_request",
+        "get_current_branch",
+        "get_project_info"
       ]
     }
   }
@@ -203,6 +212,106 @@ Get available analysis rules for a specific language.
 
 ### `get_server_config`
 Get current server configuration and health status.
+
+### `create_merge_request` 🆕
+Create a new GitLab merge request from a source branch.
+
+**Parameters:**
+- `projectId` (string): GitLab project ID or path (e.g., "12345" or "group/project")
+- `sourceBranch` (string): Source branch name (e.g., "feature/new-feature")
+- `targetBranch` (string, optional): Target branch name (defaults to "main")
+- `title` (string, optional): Merge request title (auto-generated from branch name if not provided)
+- `description` (string, optional): Merge request description
+- `assigneeId` (number, optional): User ID to assign the merge request to
+- `reviewerIds` (array, optional): Array of user IDs to request reviews from
+- `deleteSourceBranch` (boolean, optional): Whether to delete source branch when MR is merged
+- `squash` (boolean, optional): Whether to squash commits when merging
+
+**Example:**
+```javascript
+// Minimal usage
+{
+  "projectId": "mygroup/myproject",
+  "sourceBranch": "feature/user-authentication"
+}
+
+// Full configuration
+{
+  "projectId": "12345",
+  "sourceBranch": "feature/user-authentication",
+  "targetBranch": "develop",
+  "title": "feat: Add user authentication system",
+  "description": "This MR adds JWT-based authentication with password hashing.",
+  "assigneeId": 123,
+  "reviewerIds": [456, 789],
+  "deleteSourceBranch": true,
+  "squash": true
+}
+```
+
+**Auto-generated Titles:**
+The tool automatically generates conventional commit-style titles based on branch prefixes:
+- `feature/` → `feat: `
+- `bugfix/` → `fix: `
+- `hotfix/` → `fix: `
+- `docs/` → `docs: `
+- `refactor/` → `refactor: `
+
+### `get_current_branch` 🆕
+Get current Git branch and repository information.
+
+**Parameters:**
+- `workingDirectory` (string, optional): Working directory path (defaults to current directory)
+
+**Example:**
+```javascript
+{
+  "workingDirectory": "/path/to/your/project"
+}
+```
+
+**Returns:**
+```json
+{
+  "currentBranch": "feature/user-authentication",
+  "allBranches": ["main", "feature/user-authentication", "develop"],
+  "isGitRepository": true,
+  "repositoryRoot": "/path/to/your/project"
+}
+```
+
+### `get_project_info` 🆕
+Get current GitLab project information from Git remotes.
+
+**Parameters:**
+- `workingDirectory` (string, optional): Working directory path (defaults to current directory)
+- `remoteName` (string, optional): Git remote name (defaults to "origin")
+
+**Example:**
+```javascript
+{
+  "workingDirectory": "/path/to/your/project",
+  "remoteName": "origin"
+}
+```
+
+**Returns:**
+```json
+{
+  "projectId": "group%2Fproject",
+  "projectPath": "group/project",
+  "gitlabUrl": "https://gitlab.com",
+  "remotes": [
+    {
+      "name": "origin",
+      "url": "git@gitlab.com:group/project.git",
+      "fetch": "git@gitlab.com:group/project.git",
+      "push": "git@gitlab.com:group/project.git"
+    }
+  ],
+  "isGitlabProject": true
+}
+```
 
 ## API Token Setup
 
