@@ -10,7 +10,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Command } from 'commander';
 import { config } from 'dotenv';
-import axios, { AxiosResponse } from 'axios';
+import axios, { AxiosResponse, AxiosError } from 'axios';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -794,6 +794,29 @@ class CodeReviewMCPServer {
       squash = false,
     } = args;
 
+    // Validate and normalize project ID
+    const normalizedProjectId = this.normalizeProjectId(projectId);
+    if (!normalizedProjectId) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: 'Invalid project ID format',
+              message: `❌ Project ID should be in format "group/project" or numeric ID like "12345"`,
+              providedProjectId: projectId,
+              suggestions: [
+                'Use project path format: "mygroup/myproject"',
+                'Use numeric project ID: "12345"',
+                'Check if the project exists and you have access to it'
+              ]
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
     // Auto-generate title from branch name if not provided
     const mrTitle = title || this.generateMRTitle(sourceBranch);
 
@@ -825,8 +848,56 @@ class CodeReviewMCPServer {
     }
 
     try {
+      // First, try to verify project exists by fetching project info
+      console.log(`🔍 Attempting to verify project: ${normalizedProjectId}`);
+      
+      try {
+        const projectEndpoint = `projects/${normalizedProjectId}`;
+        const projectResponse = await this.makeApiRequest(projectEndpoint);
+        console.log(`✅ Project verified: ${projectResponse.data.name} (ID: ${projectResponse.data.id})`);
+      } catch (verifyError) {
+        console.warn(`⚠️ Project verification failed, proceeding with MR creation...`);
+        
+        // Provide detailed error information for project not found
+        if (this.isAxiosError(verifyError) && verifyError.response?.status === 404) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: '404 Project Not Found',
+                  message: `❌ Cannot find project: ${projectId}`,
+                  details: {
+                    providedProjectId: projectId,
+                    normalizedProjectId: normalizedProjectId,
+                    apiEndpoint: `${this.config.apiBaseUrl}/projects/${normalizedProjectId}`,
+                    possibleCauses: [
+                      'Project does not exist',
+                      'Project is private and you don\'t have access',
+                      'Invalid project ID or path format',
+                      'Incorrect GitLab API base URL',
+                      'Invalid or expired API token'
+                    ],
+                    troubleshooting: [
+                      'Verify project exists in GitLab UI',
+                      'Check if you have Developer/Maintainer access to the project',
+                      'Try using project path format: "group/project"',
+                      'Try using numeric project ID instead',
+                      'Verify API token has correct permissions'
+                    ]
+                  }
+                }, null, 2),
+              },
+            ],
+          };
+        }
+      }
+
       // Create the merge request using GitLab API
-      const endpoint = `projects/${encodeURIComponent(projectId)}/merge_requests`;
+      const endpoint = `projects/${normalizedProjectId}/merge_requests`;
+      console.log(`🚀 Creating merge request at endpoint: ${endpoint}`);
+      
       const response = await this.makeApiRequest(endpoint, {
         method: 'POST',
         data: requestData,
@@ -850,6 +921,10 @@ class CodeReviewMCPServer {
                 author: mrData.author,
               },
               message: `🎉 Merge request created successfully!`,
+              projectInfo: {
+                originalProjectId: projectId,
+                normalizedProjectId: normalizedProjectId,
+              }
             }, null, 2),
           },
         ],
@@ -857,15 +932,78 @@ class CodeReviewMCPServer {
     } catch (error) {
       console.error('Failed to create merge request:', error);
       
+      // Enhanced error reporting
+      let errorDetails: any = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        message: `❌ Failed to create merge request`,
+        projectInfo: {
+          originalProjectId: projectId,
+          normalizedProjectId: normalizedProjectId,
+        },
+        requestDetails: {
+          endpoint: `projects/${normalizedProjectId}/merge_requests`,
+          method: 'POST',
+          sourceBranch,
+          targetBranch,
+          title: mrTitle
+        }
+      };
+
+      // Add specific error handling for common GitLab API errors
+      if (this.isAxiosError(error)) {
+        const status = error.response?.status;
+        const responseData = error.response?.data;
+        
+        errorDetails.httpStatus = status;
+        errorDetails.responseData = responseData;
+
+        switch (status) {
+          case 400:
+            errorDetails.troubleshooting = [
+              'Check if source branch exists',
+              'Verify branch names are valid',
+              'Ensure target branch exists',
+              'Check if MR already exists for this branch'
+            ];
+            break;
+          case 401:
+            errorDetails.troubleshooting = [
+              'Check API token validity',
+              'Verify token has not expired',
+              'Ensure token has correct permissions'
+            ];
+            break;
+          case 403:
+            errorDetails.troubleshooting = [
+              'Check if you have push access to the project',
+              'Verify you have permission to create merge requests',
+              'Check if branch protection rules allow MR creation'
+            ];
+            break;
+          case 404:
+            errorDetails.troubleshooting = [
+              'Verify project exists and you have access',
+              'Check if source branch exists',
+              'Try using different project ID format',
+              'Verify GitLab API base URL is correct'
+            ];
+            break;
+          case 409:
+            errorDetails.troubleshooting = [
+              'A merge request may already exist for this branch',
+              'Check for conflicting branch names',
+              'Verify source and target branches are different'
+            ];
+            break;
+        }
+      }
+      
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: error instanceof Error ? error.message : String(error),
-              message: `❌ Failed to create merge request`,
-            }, null, 2),
+            text: JSON.stringify(errorDetails, null, 2),
           },
         ],
       };
@@ -1133,6 +1271,37 @@ class CodeReviewMCPServer {
     } catch (error) {
       return {};
     }
+  }
+
+  private normalizeProjectId(projectId: string): string | null {
+    if (!projectId || typeof projectId !== 'string') {
+      return null;
+    }
+
+    const trimmedId = projectId.trim();
+    
+    // Check if it's a numeric ID
+    if (/^\d+$/.test(trimmedId)) {
+      return trimmedId;
+    }
+    
+    // Check if it's a valid project path format (group/project or group/subgroup/project)
+    if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/.test(trimmedId)) {
+      // For project paths, use URL encoding but be more careful
+      // GitLab API expects URL encoding for paths but not for numeric IDs
+      return encodeURIComponent(trimmedId);
+    }
+    
+    // If it looks like it might already be encoded, try to use it as-is
+    if (trimmedId.includes('%')) {
+      return trimmedId;
+    }
+    
+    return null;
+  }
+
+  private isAxiosError(error: any): error is AxiosError {
+    return error && error.isAxiosError === true;
   }
 
   async run(): Promise<void> {

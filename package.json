@@ -1,6 +1,6 @@
 {
   "name": "gitlab-review-mcp",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Node.js MCP server for GitLab code review operations with AI integration support",
   "main": "dist/index.js",
   "type": "module",

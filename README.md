@@ -214,10 +214,12 @@ Get available analysis rules for a specific language.
 Get current server configuration and health status.
 
 ### `create_merge_request` 🆕
-Create a new GitLab merge request from a source branch.
+Create a new GitLab merge request from a source branch with enhanced error handling.
 
 **Parameters:**
-- `projectId` (string): GitLab project ID or path (e.g., "12345" or "group/project")
+- `projectId` (string): GitLab project ID or path 
+  - **Numeric ID (recommended)**: `"12345"`
+  - **Project path**: `"group/project"` or `"group/subgroup/project"`
 - `sourceBranch` (string): Source branch name (e.g., "feature/new-feature")
 - `targetBranch` (string, optional): Target branch name (defaults to "main")
 - `title` (string, optional): Merge request title (auto-generated from branch name if not provided)
@@ -226,6 +228,12 @@ Create a new GitLab merge request from a source branch.
 - `reviewerIds` (array, optional): Array of user IDs to request reviews from
 - `deleteSourceBranch` (boolean, optional): Whether to delete source branch when MR is merged
 - `squash` (boolean, optional): Whether to squash commits when merging
+
+**Enhanced Error Handling:**
+- Project ID validation with detailed error messages
+- Automatic project verification before MR creation
+- Comprehensive troubleshooting guidance for common errors (404, 401, 403, etc.)
+- Support for both numeric IDs and project paths
 
 **Example:**
 ```javascript
