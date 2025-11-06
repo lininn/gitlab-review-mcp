@@ -12,7 +12,7 @@ import { Command } from 'commander';
 import { config } from 'dotenv';
 import axios, { AxiosResponse, AxiosError } from 'axios';
 import { join } from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { execSync } from 'child_process';
@@ -44,6 +44,40 @@ interface ServerConfig {
   apiToken?: string;
   timeout?: number;
   maxRetries?: number;
+}
+
+type ProjectIdResolutionSource = 'input' | 'git_remote' | 'search';
+
+interface ProjectIdCandidate {
+  rawProjectId: string;
+  normalizedProjectId: string;
+  source: ProjectIdResolutionSource;
+  metadata?: Record<string, any>;
+}
+
+interface ProjectAttemptRecord {
+  candidate: ProjectIdCandidate;
+  success: boolean;
+  status?: number;
+  errorMessage?: string;
+  projectData?: {
+    id?: number;
+    name?: string;
+    path_with_namespace?: string;
+    web_url?: string;
+    visibility?: string;
+  };
+}
+
+interface ProjectResolutionResult {
+  success: boolean;
+  rawProjectId?: string;
+  normalizedProjectId?: string;
+  source?: ProjectIdResolutionSource;
+  projectData?: any;
+  attempts: ProjectAttemptRecord[];
+  providedProjectId?: string;
+  reason?: 'invalid_format' | 'not_found' | 'not_detected';
 }
 
 // Default configuration
@@ -332,8 +366,17 @@ class CodeReviewMCPServer {
                   type: 'string',
                   description: 'Merge request IID (aliases: merge_request_iid; the number in the MR URL, not the database ID)',
                 },
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Local repository path for auto-detecting project ID (aliases: working_directory, cwd)',
+                },
+                remoteName: {
+                  type: 'string',
+                  description: 'Git remote name used for auto-detecting the project ID',
+                  default: 'origin',
+                },
               },
-              required: ['projectId', 'mergeRequestIid'],
+              required: ['mergeRequestIid'],
             },
           },
           {
@@ -382,8 +425,17 @@ class CodeReviewMCPServer {
                   description: 'Whether to squash commits when merging',
                   default: false,
                 },
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Local repository path for auto-detecting project ID (aliases: working_directory, cwd)',
+                },
+                remoteName: {
+                  type: 'string',
+                  description: 'Git remote name used for auto-detecting the project ID',
+                  default: 'origin',
+                },
               },
-              required: ['projectId', 'sourceBranch'],
+              required: ['sourceBranch'],
             },
           },
           {
@@ -802,7 +854,7 @@ class CodeReviewMCPServer {
   }
 
   private async getMergeRequest(args: any) {
-    const rawProjectId = this.coerceToString(
+    const rawProjectIdInput = this.coerceToString(
       this.getArgumentValue(args, [
         'projectId',
         'project_id',
@@ -821,29 +873,6 @@ class CodeReviewMCPServer {
       ])
     );
 
-    // Validate and normalize project ID
-    const normalizedProjectId = rawProjectId ? this.normalizeProjectId(rawProjectId) : null;
-    if (!normalizedProjectId || !rawProjectId) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: 'Invalid project ID format',
-              message: `❌ Project ID should be in format "group/project" or numeric ID like "12345"`,
-              providedProjectId: rawProjectId ?? this.getArgumentValue(args, ['projectId', 'project_id']),
-              suggestions: [
-                'Use project path format: "mygroup/myproject"',
-                'Use numeric project ID: "12345"',
-                'Check if the project exists and you have access to it'
-              ]
-            }, null, 2),
-          },
-        ],
-      };
-    }
-
     if (!mergeRequestIid) {
       return {
         content: [
@@ -861,6 +890,48 @@ class CodeReviewMCPServer {
           },
         ],
       };
+    }
+
+    const projectResolution = await this.resolveGitlabProjectId(
+      args,
+      rawProjectIdInput
+    );
+
+    if (!projectResolution.success) {
+      const resolutionDetails =
+        this.formatProjectResolutionDetails(projectResolution);
+      const { errorTitle, message, suggestions } =
+        this.buildProjectResolutionError(projectResolution, 'fetch');
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                success: false,
+                error: errorTitle,
+                message,
+                details: resolutionDetails,
+                suggestions,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const normalizedProjectId = projectResolution.normalizedProjectId!;
+    const resolvedRawProjectId = projectResolution.rawProjectId!;
+    const projectInfoDetails =
+      this.formatProjectResolutionDetails(projectResolution);
+
+    if (projectResolution.source && projectResolution.source !== 'input') {
+      console.log(
+        `ℹ️ Resolved project ID via ${projectResolution.source}: ${resolvedRawProjectId}`
+      );
     }
 
     try {
@@ -903,10 +974,7 @@ class CodeReviewMCPServer {
                 user: mrData.user,
               },
               message: `📋 Merge request fetched successfully!`,
-              projectInfo: {
-                originalProjectId: rawProjectId,
-                normalizedProjectId: normalizedProjectId,
-              }
+              projectInfo: projectInfoDetails,
             }, null, 2),
           },
         ],
@@ -919,10 +987,7 @@ class CodeReviewMCPServer {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         message: `❌ Failed to fetch merge request`,
-        projectInfo: {
-          originalProjectId: rawProjectId,
-          normalizedProjectId: normalizedProjectId,
-        },
+        projectInfo: projectInfoDetails,
         requestDetails: {
           endpoint: `projects/${normalizedProjectId}/merge_requests/${mergeRequestIid}`,
           method: 'GET'
@@ -975,7 +1040,7 @@ class CodeReviewMCPServer {
   }
 
   private async createMergeRequest(args: any) {
-    const rawProjectId = this.coerceToString(
+    const rawProjectIdInput = this.coerceToString(
       this.getArgumentValue(args, [
         'projectId',
         'project_id',
@@ -1054,46 +1119,71 @@ class CodeReviewMCPServer {
       false
     );
 
-    const normalizedProjectId = rawProjectId ? this.normalizeProjectId(rawProjectId) : null;
-    if (!normalizedProjectId || !rawProjectId) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: 'Invalid project ID format',
-              message: `❌ Project ID should be in format "group/project" or numeric ID like "12345"`,
-              providedProjectId: rawProjectId ?? this.getArgumentValue(args, ['projectId', 'project_id']),
-              suggestions: [
-                'Use project path format: "mygroup/myproject"',
-                'Use numeric project ID: "12345"',
-                'Check if the project exists and you have access to it'
-              ]
-            }, null, 2),
-          },
-        ],
-      };
-    }
-
     const sourceBranch = sourceBranchInput?.trim();
     if (!sourceBranch) {
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: 'Missing source branch',
-              message: '❌ Please provide sourceBranch (e.g., "feature/my-feature")',
-              suggestions: [
-                'Pass sourceBranch or source_branch in the tool arguments',
-                'Ensure the branch exists in the GitLab project'
-              ]
-            }, null, 2),
+            text: JSON.stringify(
+              {
+                success: false,
+                error: 'Missing source branch',
+                message:
+                  '❌ Please provide sourceBranch (e.g., "feature/my-feature")',
+                suggestions: [
+                  'Pass sourceBranch or source_branch in the tool arguments',
+                  'Ensure the branch exists in the GitLab project',
+                ],
+              },
+              null,
+              2
+            ),
           },
         ],
       };
+    }
+
+    const projectResolution = await this.resolveGitlabProjectId(
+      args,
+      rawProjectIdInput
+    );
+
+    if (!projectResolution.success) {
+      const resolutionDetails =
+        this.formatProjectResolutionDetails(projectResolution);
+      const { errorTitle, message, suggestions } =
+        this.buildProjectResolutionError(projectResolution, 'create');
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                success: false,
+                error: errorTitle,
+                message,
+                details: resolutionDetails,
+                suggestions,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const normalizedProjectId = projectResolution.normalizedProjectId!;
+    const resolvedRawProjectId = projectResolution.rawProjectId!;
+    const projectInfoDetails =
+      this.formatProjectResolutionDetails(projectResolution);
+
+    if (projectResolution.source && projectResolution.source !== 'input') {
+      console.log(
+        `ℹ️ Resolved project ID via ${projectResolution.source}: ${resolvedRawProjectId}`
+      );
     }
 
     // Auto-generate title from branch name if not provided
@@ -1127,56 +1217,9 @@ class CodeReviewMCPServer {
     }
 
     try {
-      // First, try to verify project exists by fetching project info
-      console.log(`🔍 Attempting to verify project: ${normalizedProjectId}`);
-      
-      try {
-        const projectEndpoint = `projects/${normalizedProjectId}`;
-        const projectResponse = await this.makeApiRequest(projectEndpoint);
-        console.log(`✅ Project verified: ${projectResponse.data.name} (ID: ${projectResponse.data.id})`);
-      } catch (verifyError) {
-        console.warn(`⚠️ Project verification failed, proceeding with MR creation...`);
-        
-        // Provide detailed error information for project not found
-        if (this.isAxiosError(verifyError) && verifyError.response?.status === 404) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  error: '404 Project Not Found',
-                  message: `❌ Cannot find project: ${rawProjectId}`,
-                  details: {
-                    providedProjectId: rawProjectId,
-                    normalizedProjectId: normalizedProjectId,
-                    apiEndpoint: `${this.config.apiBaseUrl}/projects/${normalizedProjectId}`,
-                    possibleCauses: [
-                      'Project does not exist',
-                      'Project is private and you don\'t have access',
-                      'Invalid project ID or path format',
-                      'Incorrect GitLab API base URL',
-                      'Invalid or expired API token'
-                    ],
-                    troubleshooting: [
-                      'Verify project exists in GitLab UI',
-                      'Check if you have Developer/Maintainer access to the project',
-                      'Try using project path format: "group/project"',
-                      'Try using numeric project ID instead',
-                      'Verify API token has correct permissions'
-                    ]
-                  }
-                }, null, 2),
-              },
-            ],
-          };
-        }
-      }
-
-      // Create the merge request using GitLab API
       const endpoint = `projects/${normalizedProjectId}/merge_requests`;
       console.log(`🚀 Creating merge request at endpoint: ${endpoint}`);
-      
+
       const response = await this.makeApiRequest(endpoint, {
         method: 'POST',
         data: requestData,
@@ -1188,40 +1231,38 @@ class CodeReviewMCPServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              mergeRequest: {
-                id: mrData.id,
-                web_url: mrData.web_url,
-                title: mrData.title,
-                state: mrData.state,
-                source_branch: mrData.source_branch,
-                target_branch: mrData.target_branch,
-                author: mrData.author,
+            text: JSON.stringify(
+              {
+                success: true,
+                mergeRequest: {
+                  id: mrData.id,
+                  web_url: mrData.web_url,
+                  title: mrData.title,
+                  state: mrData.state,
+                  source_branch: mrData.source_branch,
+                  target_branch: mrData.target_branch,
+                  author: mrData.author,
+                },
+                message: `🎉 Merge request created successfully!`,
+                projectInfo: projectInfoDetails,
+                requestData,
+                responseData: response.data,
               },
-              message: `🎉 Merge request created successfully!`,
-              projectInfo: {
-                originalProjectId: rawProjectId,
-                normalizedProjectId: normalizedProjectId,
-              },
-              requestData,
-              responseData: response.data,
-            }, null, 2),
+              null,
+              2
+            ),
           },
         ],
       };
     } catch (error) {
       console.error('Failed to create merge request:', error);
-      
+
       // Enhanced error reporting
-      let errorDetails: any = {
+      const errorDetails: any = {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         message: `❌ Failed to create merge request`,
-        projectInfo: {
-          originalProjectId: rawProjectId,
-          normalizedProjectId: normalizedProjectId,
-        },
+        projectInfo: projectInfoDetails,
         requestDetails: {
           endpoint: `projects/${normalizedProjectId}/merge_requests`,
           method: 'POST',
@@ -1230,14 +1271,14 @@ class CodeReviewMCPServer {
           title: mrTitle,
           deleteSourceBranch,
           squash,
-        }
+        },
       };
 
       // Add specific error handling for common GitLab API errors
       if (this.isAxiosError(error)) {
         const status = error.response?.status;
         const responseData = error.response?.data;
-        
+
         errorDetails.httpStatus = status;
         errorDetails.responseData = responseData;
 
@@ -1247,21 +1288,21 @@ class CodeReviewMCPServer {
               'Check if source branch exists',
               'Verify branch names are valid',
               'Ensure target branch exists',
-              'Check if MR already exists for this branch'
+              'Check if MR already exists for this branch',
             ];
             break;
           case 401:
             errorDetails.troubleshooting = [
               'Check API token validity',
               'Verify token has not expired',
-              'Ensure token has correct permissions'
+              'Ensure token has correct permissions',
             ];
             break;
           case 403:
             errorDetails.troubleshooting = [
               'Check if you have push access to the project',
               'Verify you have permission to create merge requests',
-              'Check if branch protection rules allow MR creation'
+              'Check if branch protection rules allow MR creation',
             ];
             break;
           case 404:
@@ -1269,19 +1310,19 @@ class CodeReviewMCPServer {
               'Verify project exists and you have access',
               'Check if source branch exists',
               'Try using different project ID format',
-              'Verify GitLab API base URL is correct'
+              'Verify GitLab API base URL is correct',
             ];
             break;
           case 409:
             errorDetails.troubleshooting = [
               'A merge request may already exist for this branch',
               'Check for conflicting branch names',
-              'Verify source and target branches are different'
+              'Verify source and target branches are different',
             ];
             break;
         }
       }
-      
+
       return {
         content: [
           {
@@ -1639,6 +1680,455 @@ class CodeReviewMCPServer {
     }
     const single = this.coerceToNumber(value);
     return single !== undefined ? [single] : undefined;
+  }
+
+  private getWorkingDirectoryArg(args: any): string | undefined {
+    const candidate = this.coerceToString(
+      this.getArgumentValue(args, [
+        'workingDirectory',
+        'working_directory',
+        'cwd',
+      ])
+    );
+
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+
+    return undefined;
+  }
+
+  private getRemoteNameArg(args: any): string {
+    return (
+      this.coerceToString(
+        this.getArgumentValue(args, ['remoteName', 'remote_name', 'remote'])
+      ) ?? 'origin'
+    );
+  }
+
+  private getApiHost(): string | null {
+    try {
+      if (!this.config.apiBaseUrl) {
+        return null;
+      }
+      return new URL(this.config.apiBaseUrl).host;
+    } catch {
+      return null;
+    }
+  }
+
+  private getProjectCandidateFromGit(args: any): ProjectIdCandidate | null {
+    const workingDirectory = this.getWorkingDirectoryArg(args) ?? process.cwd();
+    const remoteName = this.getRemoteNameArg(args);
+
+    try {
+      const projectInfo = this.executeGitCommand(
+        'get_project_info',
+        workingDirectory,
+        remoteName
+      ) as ProjectInfo;
+
+      if (!projectInfo?.isGitlabProject || !projectInfo.projectId) {
+        return null;
+      }
+
+      const apiHost = this.getApiHost();
+      if (apiHost && projectInfo.gitlabUrl) {
+        try {
+          const remoteHost = new URL(projectInfo.gitlabUrl).host;
+          if (remoteHost !== apiHost) {
+            return null;
+          }
+        } catch {
+          // Ignore parsing errors and fall through
+        }
+      }
+
+      return {
+        rawProjectId:
+          projectInfo.projectPath ?? decodeURIComponent(projectInfo.projectId),
+        normalizedProjectId: projectInfo.projectId,
+        source: 'git_remote',
+        metadata: {
+          workingDirectory,
+          remoteName,
+        },
+      };
+    } catch (error) {
+      console.warn(
+        'Failed to detect project from git remote:',
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    }
+  }
+
+  private async getProjectCandidateFromSearch(
+    projectIdentifier?: string
+  ): Promise<ProjectIdCandidate | null> {
+    if (!projectIdentifier) {
+      return null;
+    }
+
+    const trimmed = projectIdentifier.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const decodedIdentifier = decodeURIComponent(trimmed);
+    const segments = decodedIdentifier.split('/').filter(Boolean);
+    const searchTerm = segments.length > 0 ? segments[segments.length - 1] : '';
+    if (!searchTerm) {
+      return null;
+    }
+
+    const endpoint = `projects?search=${encodeURIComponent(
+      searchTerm
+    )}&simple=true&per_page=20`;
+
+    try {
+      const response = await this.makeApiRequest(endpoint);
+      const projects = Array.isArray(response.data) ? response.data : [];
+
+      if (projects.length === 0) {
+        return null;
+      }
+
+      const providedLower = decodedIdentifier.toLowerCase();
+      const searchLower = searchTerm.toLowerCase();
+
+      const exactMatch = projects.find(
+        (project: any) =>
+          typeof project?.path_with_namespace === 'string' &&
+          project.path_with_namespace.toLowerCase() === providedLower
+      );
+
+      const pathMatch = projects.find(
+        (project: any) =>
+          typeof project?.path === 'string' &&
+          project.path.toLowerCase() === searchLower
+      );
+
+      const nameMatch = projects.find(
+        (project: any) =>
+          typeof project?.name === 'string' &&
+          project.name.toLowerCase() === searchLower
+      );
+
+      const candidateProject =
+        exactMatch ?? pathMatch ?? nameMatch ?? projects[0];
+
+      if (
+        !candidateProject ||
+        typeof candidateProject?.path_with_namespace !== 'string'
+      ) {
+        return null;
+      }
+
+      return {
+        rawProjectId: candidateProject.path_with_namespace,
+        normalizedProjectId: encodeURIComponent(
+          candidateProject.path_with_namespace
+        ),
+        source: 'search',
+        metadata: {
+          searchTerm,
+          projectId: candidateProject.id,
+          resultCount: projects.length,
+        },
+      };
+    } catch (error) {
+      console.warn(
+        'GitLab project search failed:',
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    }
+  }
+
+  private async verifyProjectCandidate(
+    candidate: ProjectIdCandidate,
+    attempts: ProjectAttemptRecord[]
+  ): Promise<{ verified: boolean; status?: number; projectData?: any }> {
+    try {
+      const response = await this.makeApiRequest(
+        `projects/${candidate.normalizedProjectId}`
+      );
+      const projectData = response.data;
+
+      attempts.push({
+        candidate,
+        success: true,
+        status: response.status,
+        projectData: projectData
+          ? {
+              id: projectData.id,
+              name: projectData.name,
+              path_with_namespace: projectData.path_with_namespace,
+              web_url: projectData.web_url,
+              visibility: projectData.visibility,
+            }
+          : undefined,
+      });
+
+      return {
+        verified: true,
+        status: response.status,
+        projectData,
+      };
+    } catch (error) {
+      let status: number | undefined;
+      let errorMessage: string | undefined;
+
+      if (this.isAxiosError(error)) {
+        status = error.response?.status;
+        const responseData: any = error.response?.data;
+        errorMessage =
+          (responseData && (responseData.message || responseData.error)) ||
+          error.message;
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = String(error);
+      }
+
+      attempts.push({
+        candidate,
+        success: false,
+        status,
+        errorMessage,
+      });
+
+      if (status && status !== 404) {
+        throw error;
+      }
+
+      return {
+        verified: false,
+        status,
+      };
+    }
+  }
+
+  private async getFallbackProjectCandidates(
+    args: any,
+    options: {
+      allowSearch: boolean;
+      providedProjectId?: string;
+      excludeNormalized?: string;
+    }
+  ): Promise<ProjectIdCandidate[]> {
+    const candidates: ProjectIdCandidate[] = [];
+
+    const gitCandidate = this.getProjectCandidateFromGit(args);
+    if (
+      gitCandidate &&
+      gitCandidate.normalizedProjectId !== options.excludeNormalized
+    ) {
+      candidates.push(gitCandidate);
+    }
+
+    const searchIdentifier =
+      options.providedProjectId ?? gitCandidate?.rawProjectId;
+
+    if (options.allowSearch && searchIdentifier) {
+      const searchCandidate = await this.getProjectCandidateFromSearch(
+        searchIdentifier
+      );
+
+      if (
+        searchCandidate &&
+        searchCandidate.normalizedProjectId !== options.excludeNormalized &&
+        !candidates.some(
+          (candidate) =>
+            candidate.normalizedProjectId === searchCandidate.normalizedProjectId
+        )
+      ) {
+        candidates.push(searchCandidate);
+      }
+    }
+
+    return candidates;
+  }
+
+  private async resolveGitlabProjectId(
+    args: any,
+    rawProjectIdInput?: string | null,
+    options: { allowSearch?: boolean } = {}
+  ): Promise<ProjectResolutionResult> {
+    const allowSearch = options.allowSearch !== false;
+    const attempts: ProjectAttemptRecord[] = [];
+    const seenNormalized = new Set<string>();
+    const queue: ProjectIdCandidate[] = [];
+    const providedProjectId = rawProjectIdInput ?? undefined;
+    const normalizedProvidedProjectId = rawProjectIdInput
+      ? this.normalizeProjectId(rawProjectIdInput)
+      : null;
+    let fallbackCandidatesQueued = false;
+
+    const enqueueCandidate = (
+      candidate: ProjectIdCandidate | null | undefined
+    ) => {
+      if (
+        !candidate ||
+        !candidate.normalizedProjectId ||
+        seenNormalized.has(candidate.normalizedProjectId)
+      ) {
+        return;
+      }
+      seenNormalized.add(candidate.normalizedProjectId);
+      queue.push(candidate);
+    };
+
+    if (normalizedProvidedProjectId) {
+      enqueueCandidate({
+        rawProjectId: rawProjectIdInput!,
+        normalizedProjectId: normalizedProvidedProjectId,
+        source: 'input',
+        metadata: {
+          decodedProjectPath: decodeURIComponent(normalizedProvidedProjectId),
+        },
+      });
+    }
+
+    if (queue.length === 0) {
+      const fallbackCandidates = await this.getFallbackProjectCandidates(args, {
+        allowSearch,
+        providedProjectId,
+      });
+      fallbackCandidates.forEach(enqueueCandidate);
+      if (fallbackCandidates.length > 0) {
+        fallbackCandidatesQueued = true;
+      }
+    }
+
+    while (queue.length > 0) {
+      const candidate = queue.shift()!;
+      const verification = await this.verifyProjectCandidate(
+        candidate,
+        attempts
+      );
+
+      if (verification.verified) {
+        return {
+          success: true,
+          rawProjectId: candidate.rawProjectId,
+          normalizedProjectId: candidate.normalizedProjectId,
+          source: candidate.source,
+          projectData: verification.projectData,
+          attempts,
+          providedProjectId,
+        };
+      }
+
+      if (verification.status === 404 && !fallbackCandidatesQueued) {
+        const fallbackCandidates = await this.getFallbackProjectCandidates(
+          args,
+          {
+            allowSearch,
+            providedProjectId,
+            excludeNormalized: candidate.normalizedProjectId,
+          }
+        );
+        if (fallbackCandidates.length > 0) {
+          fallbackCandidates.forEach(enqueueCandidate);
+          fallbackCandidatesQueued = true;
+        }
+      }
+    }
+
+    let reason: ProjectResolutionResult['reason'] = undefined;
+    if (providedProjectId && !normalizedProvidedProjectId) {
+      reason = 'invalid_format';
+    } else if (attempts.some((attempt) => attempt.status === 404)) {
+      reason = 'not_found';
+    } else if (attempts.length === 0) {
+      reason = 'not_detected';
+    }
+
+    return {
+      success: false,
+      attempts,
+      providedProjectId,
+      reason,
+    };
+  }
+
+  private formatProjectResolutionDetails(
+    resolution: ProjectResolutionResult
+  ) {
+    return {
+      providedProjectId: resolution.providedProjectId,
+      resolvedProjectId: resolution.rawProjectId,
+      normalizedProjectId: resolution.normalizedProjectId,
+      resolutionSource: resolution.source,
+      reason: resolution.reason,
+      attempts: resolution.attempts.map((attempt) => ({
+        source: attempt.candidate.source,
+        rawProjectId: attempt.candidate.rawProjectId,
+        normalizedProjectId: attempt.candidate.normalizedProjectId,
+        success: attempt.success,
+        status: attempt.status,
+        errorMessage: attempt.errorMessage,
+        projectId: attempt.projectData?.id,
+        projectPath: attempt.projectData?.path_with_namespace,
+        projectName: attempt.projectData?.name,
+        projectVisibility: attempt.projectData?.visibility,
+      })),
+    };
+  }
+
+  private buildProjectResolutionError(
+    resolution: ProjectResolutionResult,
+    context: 'fetch' | 'create'
+  ) {
+    const baseMessage =
+      context === 'fetch'
+        ? '❌ Unable to resolve project ID from provided parameters or git remotes'
+        : '❌ Unable to resolve project ID needed to create merge request';
+
+    let errorTitle = 'Project Resolution Failed';
+    let message = baseMessage;
+    let suggestions: string[] = [
+      'Verify the project exists and you have access',
+      'Provide projectId in format "group/project"',
+      'Try using numeric project ID (e.g., "12345")',
+    ];
+
+    switch (resolution.reason) {
+      case 'invalid_format':
+        errorTitle = 'Invalid project ID format';
+        message =
+          '❌ Project ID should be in format "group/project" or numeric ID like "12345"';
+        suggestions = [
+          'Use project path format: "mygroup/myproject"',
+          'Run tool with workingDirectory so the project can be auto-detected from git remote',
+          'Use numeric project ID: "12345"',
+        ];
+        break;
+      case 'not_detected':
+        errorTitle = 'Project auto-detection failed';
+        message =
+          '❌ Could not detect GitLab project automatically from git remotes';
+        suggestions = [
+          'Provide projectId explicitly (e.g., "group/project")',
+          'Ensure workingDirectory points to the GitLab repository',
+          'If remote is not "origin", pass remoteName (e.g., "upstream")',
+        ];
+        break;
+      case 'not_found':
+        errorTitle = 'Project not found';
+        message =
+          '❌ GitLab API returned 404 for provided project ID candidates';
+        suggestions = [
+          'Verify the project exists and you have access',
+          'Check git remote path (git remote -v) to confirm namespace',
+          'Try using numeric project ID from GitLab project settings',
+        ];
+        break;
+    }
+
+    return { errorTitle, message, suggestions };
   }
 
   private normalizeProjectId(projectId: string): string | null {

@@ -6,6 +6,7 @@
 - `get_merge_request` 和 `create_merge_request` 兼容 snake_case / camelCase 参数（如 `project_id`、`merge_request_iid`、`source_branch` 等）
 - 新增参数类型自动转换逻辑，支持字符串/数字/布尔的灵活输入
 - 返回结果中补充请求上下文，便于排查 GitLab API 调用问题
+- 自动检测 GitLab 项目：404 时尝试从本地 git remote 或 GitLab 搜索纠正 `project_id`，同时支持省略 `projectId` 参数
 
 ## [1.0.20] - 2025-01-06
 
