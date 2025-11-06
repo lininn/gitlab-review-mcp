@@ -319,6 +319,24 @@ class CodeReviewMCPServer {
             },
           },
           {
+            name: 'get_merge_request',
+            description: 'Get information about a specific GitLab merge request',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                projectId: {
+                  type: 'string',
+                  description: 'GitLab project ID or path (aliases: project_id, project_path; e.g., "12345" or "group/project")',
+                },
+                mergeRequestIid: {
+                  type: 'string',
+                  description: 'Merge request IID (aliases: merge_request_iid; the number in the MR URL, not the database ID)',
+                },
+              },
+              required: ['projectId', 'mergeRequestIid'],
+            },
+          },
+          {
             name: 'create_merge_request',
             description: 'Create a new GitLab merge request from a source branch',
             inputSchema: {
@@ -326,15 +344,15 @@ class CodeReviewMCPServer {
               properties: {
                 projectId: {
                   type: 'string',
-                  description: 'GitLab project ID or path (e.g., "12345" or "group/project")',
+                  description: 'GitLab project ID or path (aliases: project_id, project_path; e.g., "12345" or "group/project")',
                 },
                 sourceBranch: {
                   type: 'string',
-                  description: 'Source branch name (e.g., "feature/new-feature")',
+                  description: 'Source branch name (aliases: source_branch; e.g., "feature/new-feature")',
                 },
                 targetBranch: {
                   type: 'string',
-                  description: 'Target branch name (defaults to "main")',
+                  description: 'Target branch name (aliases: target_branch; defaults to "main")',
                   default: 'main',
                 },
                 title: {
@@ -428,6 +446,8 @@ class CodeReviewMCPServer {
             return await this.getPullRequestFiles(args);
           case 'get_server_config':
             return await this.getServerConfig();
+          case 'get_merge_request':
+            return await this.getMergeRequest(args);
           case 'create_merge_request':
             return await this.createMergeRequest(args);
           case 'get_current_branch':
@@ -781,22 +801,29 @@ class CodeReviewMCPServer {
     };
   }
 
-  private async createMergeRequest(args: any) {
-    const {
-      projectId,
-      sourceBranch,
-      targetBranch = 'main',
-      title,
-      description,
-      assigneeId,
-      reviewerIds,
-      deleteSourceBranch = false,
-      squash = false,
-    } = args;
+  private async getMergeRequest(args: any) {
+    const rawProjectId = this.coerceToString(
+      this.getArgumentValue(args, [
+        'projectId',
+        'project_id',
+        'project',
+        'projectPath',
+        'project_path',
+      ])
+    );
+    const mergeRequestIid = this.coerceToString(
+      this.getArgumentValue(args, [
+        'mergeRequestIid',
+        'merge_request_iid',
+        'mergeRequestIID',
+        'merge_request_IID',
+        'iid',
+      ])
+    );
 
     // Validate and normalize project ID
-    const normalizedProjectId = this.normalizeProjectId(projectId);
-    if (!normalizedProjectId) {
+    const normalizedProjectId = rawProjectId ? this.normalizeProjectId(rawProjectId) : null;
+    if (!normalizedProjectId || !rawProjectId) {
       return {
         content: [
           {
@@ -805,11 +832,263 @@ class CodeReviewMCPServer {
               success: false,
               error: 'Invalid project ID format',
               message: `❌ Project ID should be in format "group/project" or numeric ID like "12345"`,
-              providedProjectId: projectId,
+              providedProjectId: rawProjectId ?? this.getArgumentValue(args, ['projectId', 'project_id']),
               suggestions: [
                 'Use project path format: "mygroup/myproject"',
                 'Use numeric project ID: "12345"',
                 'Check if the project exists and you have access to it'
+              ]
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    if (!mergeRequestIid) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: 'Missing merge request IID',
+              message: '❌ Please provide mergeRequestIid (e.g., "42")',
+              suggestions: [
+                'The IID is the number visible in the merge request URL',
+                'Pass mergeRequestIid or merge_request_iid in the tool arguments'
+              ]
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    try {
+      // Fetch merge request details from GitLab API
+      const endpoint = `projects/${normalizedProjectId}/merge_requests/${mergeRequestIid}`;
+      console.log(`🔍 Fetching merge request at endpoint: ${endpoint}`);
+      
+      const response = await this.makeApiRequest(endpoint);
+
+      const mrData = response.data;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              mergeRequest: {
+                id: mrData.id,
+                iid: mrData.iid,
+                title: mrData.title,
+                description: mrData.description,
+                state: mrData.state,
+                source_branch: mrData.source_branch,
+                target_branch: mrData.target_branch,
+                author: mrData.author,
+                web_url: mrData.web_url,
+                created_at: mrData.created_at,
+                updated_at: mrData.updated_at,
+                notes_count: mrData.notes_count,
+                commits_count: mrData.commits_count,
+                changes_count: mrData.changes_count,
+                merge_status: mrData.merge_status,
+                approvals_before_merge: mrData.approvals_before_merge,
+                approved_by: mrData.approved_by,
+                reviewers: mrData.reviewers,
+                assignees: mrData.assignees,
+                labels: mrData.labels,
+                milestone: mrData.milestone,
+                user: mrData.user,
+              },
+              message: `📋 Merge request fetched successfully!`,
+              projectInfo: {
+                originalProjectId: rawProjectId,
+                normalizedProjectId: normalizedProjectId,
+              }
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('Failed to fetch merge request:', error);
+      
+      // Enhanced error reporting
+      let errorDetails: any = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        message: `❌ Failed to fetch merge request`,
+        projectInfo: {
+          originalProjectId: rawProjectId,
+          normalizedProjectId: normalizedProjectId,
+        },
+        requestDetails: {
+          endpoint: `projects/${normalizedProjectId}/merge_requests/${mergeRequestIid}`,
+          method: 'GET'
+        }
+      };
+
+      // Add specific error handling for common GitLab API errors
+      if (this.isAxiosError(error)) {
+        const status = error.response?.status;
+        const responseData = error.response?.data;
+        
+        errorDetails.httpStatus = status;
+        errorDetails.responseData = responseData;
+
+        switch (status) {
+          case 401:
+            errorDetails.troubleshooting = [
+              'Check API token validity',
+              'Verify token has not expired',
+              'Ensure token has correct permissions'
+            ];
+            break;
+          case 403:
+            errorDetails.troubleshooting = [
+              'Check if you have read access to the project',
+              'Verify you have permission to view merge requests',
+              'Check if the merge request is private'
+            ];
+            break;
+          case 404:
+            errorDetails.troubleshooting = [
+              'Verify project exists and you have access',
+              'Check if merge request IID is correct',
+              'Verify the merge request has not been deleted',
+              'Try using different project ID format'
+            ];
+            break;
+        }
+      }
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(errorDetails, null, 2),
+          },
+        ],
+      };
+    }
+  }
+
+  private async createMergeRequest(args: any) {
+    const rawProjectId = this.coerceToString(
+      this.getArgumentValue(args, [
+        'projectId',
+        'project_id',
+        'project',
+        'projectPath',
+        'project_path',
+      ])
+    );
+
+    const sourceBranchInput = this.coerceToString(
+      this.getArgumentValue(args, [
+        'sourceBranch',
+        'source_branch',
+        'source',
+      ])
+    );
+
+    const targetBranch =
+      this.coerceToString(
+        this.getArgumentValue(args, [
+          'targetBranch',
+          'target_branch',
+          'destinationBranch',
+          'destination_branch',
+        ])
+      ) ?? 'main';
+
+    const title = this.coerceToString(
+      this.getArgumentValue(args, [
+        'title',
+        'mr_title',
+        'mergeRequestTitle',
+      ])
+    );
+
+    const description = this.coerceToString(
+      this.getArgumentValue(args, [
+        'description',
+        'body',
+        'mergeRequestDescription',
+      ])
+    );
+
+    const assigneeId = this.coerceToNumber(
+      this.getArgumentValue(args, [
+        'assigneeId',
+        'assignee_id',
+        'assignee',
+      ])
+    );
+
+    const reviewerIds = this.coerceToNumberArray(
+      this.getArgumentValue(args, [
+        'reviewerIds',
+        'reviewer_ids',
+        'reviewers',
+      ])
+    );
+
+    const deleteSourceBranch = this.coerceToBoolean(
+      this.getArgumentValue(args, [
+        'deleteSourceBranch',
+        'delete_source_branch',
+        'removeSourceBranch',
+        'remove_source_branch',
+      ]),
+      false
+    );
+
+    const squash = this.coerceToBoolean(
+      this.getArgumentValue(args, [
+        'squash',
+        'shouldSquash',
+        'squash_commits',
+      ]),
+      false
+    );
+
+    const normalizedProjectId = rawProjectId ? this.normalizeProjectId(rawProjectId) : null;
+    if (!normalizedProjectId || !rawProjectId) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: 'Invalid project ID format',
+              message: `❌ Project ID should be in format "group/project" or numeric ID like "12345"`,
+              providedProjectId: rawProjectId ?? this.getArgumentValue(args, ['projectId', 'project_id']),
+              suggestions: [
+                'Use project path format: "mygroup/myproject"',
+                'Use numeric project ID: "12345"',
+                'Check if the project exists and you have access to it'
+              ]
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const sourceBranch = sourceBranchInput?.trim();
+    if (!sourceBranch) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: 'Missing source branch',
+              message: '❌ Please provide sourceBranch (e.g., "feature/my-feature")',
+              suggestions: [
+                'Pass sourceBranch or source_branch in the tool arguments',
+                'Ensure the branch exists in the GitLab project'
               ]
             }, null, 2),
           },
@@ -831,7 +1110,7 @@ class CodeReviewMCPServer {
       requestData.description = description;
     }
 
-    if (assigneeId) {
+    if (assigneeId !== undefined) {
       requestData.assignee_id = assigneeId;
     }
 
@@ -867,9 +1146,9 @@ class CodeReviewMCPServer {
                 text: JSON.stringify({
                   success: false,
                   error: '404 Project Not Found',
-                  message: `❌ Cannot find project: ${projectId}`,
+                  message: `❌ Cannot find project: ${rawProjectId}`,
                   details: {
-                    providedProjectId: projectId,
+                    providedProjectId: rawProjectId,
                     normalizedProjectId: normalizedProjectId,
                     apiEndpoint: `${this.config.apiBaseUrl}/projects/${normalizedProjectId}`,
                     possibleCauses: [
@@ -922,9 +1201,11 @@ class CodeReviewMCPServer {
               },
               message: `🎉 Merge request created successfully!`,
               projectInfo: {
-                originalProjectId: projectId,
+                originalProjectId: rawProjectId,
                 normalizedProjectId: normalizedProjectId,
-              }
+              },
+              requestData,
+              responseData: response.data,
             }, null, 2),
           },
         ],
@@ -938,7 +1219,7 @@ class CodeReviewMCPServer {
         error: error instanceof Error ? error.message : String(error),
         message: `❌ Failed to create merge request`,
         projectInfo: {
-          originalProjectId: projectId,
+          originalProjectId: rawProjectId,
           normalizedProjectId: normalizedProjectId,
         },
         requestDetails: {
@@ -946,7 +1227,9 @@ class CodeReviewMCPServer {
           method: 'POST',
           sourceBranch,
           targetBranch,
-          title: mrTitle
+          title: mrTitle,
+          deleteSourceBranch,
+          squash,
         }
       };
 
@@ -1273,6 +1556,91 @@ class CodeReviewMCPServer {
     }
   }
 
+  private getArgumentValue<T = any>(args: Record<string, any> | undefined, keys: string[], defaultValue?: T): T | undefined {
+    if (!args) {
+      return defaultValue;
+    }
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(args, key) && args[key] !== undefined) {
+        return args[key];
+      }
+    }
+    return defaultValue;
+  }
+
+  private coerceToString(value: unknown): string | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    return undefined;
+  }
+
+  private coerceToBoolean(value: unknown, defaultValue = false): boolean {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+        return false;
+      }
+    }
+    return defaultValue;
+  }
+
+  private coerceToNumber(value: unknown): number | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value === 'number') {
+      return Number.isNaN(value) ? undefined : value;
+    }
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      return Number.isNaN(parsed) ? undefined : parsed;
+    }
+    return undefined;
+  }
+
+  private coerceToNumberArray(value: unknown): number[] | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (Array.isArray(value)) {
+      const parsed = value
+        .map((item) => this.coerceToNumber(item))
+        .filter((item): item is number => item !== undefined);
+      return parsed.length > 0 ? parsed : undefined;
+    }
+    if (typeof value === 'string') {
+      const parts = value
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const parsed = parts
+        .map((part) => this.coerceToNumber(part))
+        .filter((item): item is number => item !== undefined);
+      return parsed.length > 0 ? parsed : undefined;
+    }
+    const single = this.coerceToNumber(value);
+    return single !== undefined ? [single] : undefined;
+  }
+
   private normalizeProjectId(projectId: string): string | null {
     if (!projectId || typeof projectId !== 'string') {
       return null;
@@ -1285,16 +1653,34 @@ class CodeReviewMCPServer {
       return trimmedId;
     }
     
-    // Check if it's a valid project path format (group/project or group/subgroup/project)
-    if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/.test(trimmedId)) {
-      // For project paths, use URL encoding but be more careful
+    // If it looks like it might already be encoded, try to use it as-is first
+    if (trimmedId.includes('%')) {
+      return trimmedId;
+    }
+    
+    // Check if it's a valid project path format (更宽松的正则表达式以支持更多GitLab项目格式)
+    // 支持: group/project, group/subgroup/project, 以及包含连字符、下划线、点的项目名
+    // 也支持中文字符和其他Unicode字符，这在某些GitLab实例中是允许的
+    if (/^[a-zA-Z0-9_.\u4e00-\u9fff-]+\/[a-zA-Z0-9_.\u4e00-\u9fff-]+(?:\/[a-zA-Z0-9_.\u4e00-\u9fff-]+)*$/.test(trimmedId)) {
+      // For project paths, use URL encoding
       // GitLab API expects URL encoding for paths but not for numeric IDs
       return encodeURIComponent(trimmedId);
     }
     
-    // If it looks like it might already be encoded, try to use it as-is
-    if (trimmedId.includes('%')) {
-      return trimmedId;
+    // 更宽松的验证：如果包含斜杠，很可能是项目路径格式，尝试编码
+    if (trimmedId.includes('/') && trimmedId.split('/').length >= 2) {
+      // 简单验证：至少包含 group/project 格式
+      const parts = trimmedId.split('/');
+      if (parts.every(part => part.length > 0 && !/^[\s]*$/.test(part))) {
+        return encodeURIComponent(trimmedId);
+      }
+    }
+    
+    // 作为最后尝试，如果看起来像一个合理的标识符，返回编码后的版本
+    // 这提供了更好的向后兼容性
+    if (trimmedId.length > 0 && !/^[\s]*$/.test(trimmedId)) {
+      console.warn(`⚠️ Using fallback encoding for project ID: ${trimmedId}`);
+      return encodeURIComponent(trimmedId);
     }
     
     return null;

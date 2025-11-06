@@ -1,5 +1,26 @@
 # 更新日志
 
+## [1.0.21] - 2025-01-06
+
+### 🔧 改进
+- `get_merge_request` 和 `create_merge_request` 兼容 snake_case / camelCase 参数（如 `project_id`、`merge_request_iid`、`source_branch` 等）
+- 新增参数类型自动转换逻辑，支持字符串/数字/布尔的灵活输入
+- 返回结果中补充请求上下文，便于排查 GitLab API 调用问题
+
+## [1.0.20] - 2025-01-06
+
+### 🐛 修复
+- 修复 `normalizeProjectId` 函数的项目ID格式验证过于严格的问题
+- 增强对 GitLab 项目路径格式的兼容性支持（如 `front-end/wmflight`）
+- 添加对中文字符和 Unicode 字符的支持
+- 改进 URL 编码处理逻辑，提供更好的向后兼容性
+- 增加 fallback 机制和警告日志以提升调试体验
+
+### 🔧 改进
+- 放宽项目ID验证的正则表达式规则
+- 优化错误处理机制，提供更详细的错误信息
+- 增强项目路径编码的鲁棒性
+
 ## [1.0.0] - 2024-08-27
 
 ### 🆕 新功能
