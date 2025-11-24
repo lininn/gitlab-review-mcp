@@ -153,7 +153,7 @@ class CodeReviewMCPServer {
                   type: 'string',
                   enum: ['github', 'gitlab'],
                   description: 'Git provider (github or gitlab)',
-                  default: 'github',
+                  default: 'gitlab',
                 },
               },
               required: ['repository', 'pullRequestNumber'],
@@ -185,7 +185,7 @@ class CodeReviewMCPServer {
                   type: 'string',
                   enum: ['github', 'gitlab'],
                   description: 'Git provider (github or gitlab)',
-                  default: 'github',
+                  default: 'gitlab',
                 },
               },
               required: ['repository'],
@@ -221,7 +221,7 @@ class CodeReviewMCPServer {
                   type: 'string',
                   enum: ['github', 'gitlab'],
                   description: 'Git provider (github or gitlab)',
-                  default: 'github',
+                  default: 'gitlab',
                 },
               },
               required: ['repository', 'pullRequestNumber', 'body'],
@@ -286,7 +286,7 @@ class CodeReviewMCPServer {
                   type: 'string',
                   enum: ['github', 'gitlab'],
                   description: 'Git provider (github or gitlab)',
-                  default: 'github',
+                  default: 'gitlab',
                 },
               },
               required: ['repository'],
@@ -338,7 +338,7 @@ class CodeReviewMCPServer {
                   type: 'string',
                   enum: ['github', 'gitlab'],
                   description: 'Git provider (github or gitlab)',
-                  default: 'github',
+                  default: 'gitlab',
                 },
               },
               required: ['repository', 'pullRequestNumber'],
@@ -534,14 +534,79 @@ class CodeReviewMCPServer {
   }
 
   private async fetchPullRequest(args: any) {
-    const { repository, pullRequestNumber, provider = 'github' } = args;
+    const provider =
+      this.coerceToString(this.getArgumentValue(args, ['provider'])) ??
+      'gitlab';
+
+    const repository = this.coerceToString(
+      this.getArgumentValue(args, [
+        'repository',
+        'project',
+        'projectId',
+        'project_id',
+        'project_path',
+      ])
+    );
+
+    const pullRequestIdentifier = this.coerceToString(
+      this.getArgumentValue(args, [
+        'pullRequestNumber',
+        'pull_request_number',
+        'pullRequestId',
+        'pull_request_id',
+        'mergeRequestIid',
+        'merge_request_iid',
+        'mergeRequestId',
+        'merge_request_id',
+      ])
+    );
+
+    if (!pullRequestIdentifier) {
+      throw new Error(
+        'Pull request number (pullRequestNumber or mergeRequestIid) is required'
+      );
+    }
 
     let endpoint: string;
     if (provider === 'github') {
-      endpoint = `repos/${repository}/pulls/${pullRequestNumber}`;
+      if (!repository) {
+        throw new Error('Repository is required for GitHub provider');
+      }
+      endpoint = `repos/${repository}/pulls/${pullRequestIdentifier}`;
     } else if (provider === 'gitlab') {
-      // For GitLab, repository should be the project ID or path
-      endpoint = `projects/${encodeURIComponent(repository)}/merge_requests/${pullRequestNumber}`;
+      const projectResolution = await this.resolveGitlabProjectId(
+        args,
+        repository
+      );
+
+      if (!projectResolution.success) {
+        const resolutionDetails =
+          this.formatProjectResolutionDetails(projectResolution);
+        const { errorTitle, message, suggestions } =
+          this.buildProjectResolutionError(projectResolution, 'fetch');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  success: false,
+                  error: errorTitle,
+                  message,
+                  details: resolutionDetails,
+                  suggestions,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+      
+      const normalizedProjectId = projectResolution.normalizedProjectId!;
+      endpoint = `projects/${normalizedProjectId}/merge_requests/${pullRequestIdentifier}`;
     } else {
       throw new Error(`Unsupported provider: ${provider}`);
     }
@@ -559,7 +624,7 @@ class CodeReviewMCPServer {
   }
 
   private async fetchCodeDiff(args: any) {
-    const { repository, pullRequestNumber, commitSha, filePath, provider = 'github' } = args;
+    const { repository, pullRequestNumber, commitSha, filePath, provider = 'gitlab' } = args;
 
     let endpoint: string;
     if (provider === 'github') {
@@ -605,7 +670,7 @@ class CodeReviewMCPServer {
   }
 
   private async addReviewComment(args: any) {
-    const { repository, pullRequestNumber, body, filePath, line, provider = 'github' } = args;
+    const { repository, pullRequestNumber, body, filePath, line, provider = 'gitlab' } = args;
 
     let endpoint: string;
     let requestData: any;
@@ -711,7 +776,7 @@ class CodeReviewMCPServer {
   }
 
   private async getRepositoryInfo(args: any) {
-    const { repository, provider = 'github' } = args;
+    const { repository, provider = 'gitlab' } = args;
 
     let endpoint: string;
     if (provider === 'github') {
@@ -775,7 +840,7 @@ class CodeReviewMCPServer {
   }
 
   private async getPullRequestFiles(args: any) {
-    const { repository, pullRequestNumber, provider = 'github' } = args;
+    const { repository, pullRequestNumber, provider = 'gitlab' } = args;
 
     let endpoint: string;
     if (provider === 'github') {
