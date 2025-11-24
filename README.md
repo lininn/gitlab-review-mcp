@@ -146,30 +146,30 @@ Add to your MCP client configuration (e.g., Claude Desktop):
 Fetch pull request/merge request details.
 
 **Parameters:**
-- `repository` (string): Repository in format "owner/repo"
+- `repository` (string): Repository in format "owner/repo" or GitLab project path like "group/project" (aliases: `projectId`, `project_path`)
 - `pullRequestNumber` (number): Pull request number
-- `provider` (string, optional): "github" or "gitlab" (default: "github")
+- `provider` (string, optional): "github" or "gitlab" (default: "gitlab")
 
 ### `fetch_code_diff`
 Fetch code diff for a pull request or commit.
 
 **Parameters:**
-- `repository` (string): Repository in format "owner/repo"  
+- `repository` (string): Repository in format "owner/repo" or GitLab project path like "group/project"  
 - `pullRequestNumber` (number, optional): Pull request number
 - `commitSha` (string, optional): Commit SHA
 - `filePath` (string, optional): Specific file path to get diff for
-- `provider` (string, optional): "github" or "gitlab" (default: "github")
+- `provider` (string, optional): "github" or "gitlab" (default: "gitlab")
 
 ### `add_review_comment`
 Add a review comment to a pull request.
 
 **Parameters:**
-- `repository` (string): Repository in format "owner/repo"
+- `repository` (string): Repository in format "owner/repo" or GitLab project path like "group/project"
 - `pullRequestNumber` (number): Pull request number
 - `body` (string): Comment body
 - `filePath` (string, optional): File path for line comment
 - `line` (number, optional): Line number for line comment
-- `provider` (string, optional): "github" or "gitlab" (default: "github")
+- `provider` (string, optional): "github" or "gitlab" (default: "gitlab")
 
 ### `analyze_code_quality`
 Analyze code quality and provide suggestions with detailed metrics.
@@ -183,8 +183,8 @@ Analyze code quality and provide suggestions with detailed metrics.
 Get repository information.
 
 **Parameters:**
-- `repository` (string): Repository in format "owner/repo"
-- `provider` (string, optional): "github" or "gitlab" (default: "github")
+- `repository` (string): Repository in format "owner/repo" or GitLab project path like "group/project"
+- `provider` (string, optional): "github" or "gitlab" (default: "gitlab")
 
 ### `analyze_files_batch`
 Analyze multiple files for code quality issues.
@@ -197,9 +197,9 @@ Analyze multiple files for code quality issues.
 Get list of files changed in a pull request.
 
 **Parameters:**
-- `repository` (string): Repository in format "owner/repo"
+- `repository` (string): Repository in format "owner/repo" or GitLab project path like "group/project"
 - `pullRequestNumber` (number): Pull request number
-- `provider` (string, optional): "github" or "gitlab" (default: "github")
+- `provider` (string, optional): "github" or "gitlab" (default: "gitlab")
 
 ### `get_supported_languages`
 Get list of supported programming languages for code analysis.

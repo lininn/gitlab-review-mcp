@@ -150,9 +150,9 @@ gitlab-review-mcp \
 获取拉取请求/合并请求详情。
 
 **参数：**
-- `repository` (字符串): 仓库格式 "owner/repo"
+- `repository` (字符串): 仓库格式 "owner/repo"，或 GitLab 项目路径如 "group/project"（也可使用 `projectId`、`project_path`）
 - `pullRequestNumber` (数字): 拉取请求编号
-- `provider` (字符串，可选): "github" 或 "gitlab"（默认："github"）
+- `provider` (字符串，可选): "github" 或 "gitlab"（默认："gitlab"）
 
 **示例：**
 ```json
@@ -167,11 +167,11 @@ gitlab-review-mcp \
 获取拉取请求或提交的代码差异。
 
 **参数：**
-- `repository` (字符串): 仓库格式 "owner/repo"
+- `repository` (字符串): 仓库格式 "owner/repo"，或 GitLab 项目路径如 "group/project"
 - `pullRequestNumber` (数字，可选): 拉取请求编号
 - `commitSha` (字符串，可选): 提交 SHA
 - `filePath` (字符串，可选): 特定文件路径
-- `provider` (字符串，可选): "github" 或 "gitlab"（默认："github"）
+- `provider` (字符串，可选): "github" 或 "gitlab"（默认："gitlab"）
 
 **示例：**
 ```json
@@ -187,12 +187,12 @@ gitlab-review-mcp \
 为拉取请求添加审查评论。
 
 **参数：**
-- `repository` (字符串): 仓库格式 "owner/repo"
+- `repository` (字符串): 仓库格式 "owner/repo"，或 GitLab 项目路径如 "group/project"
 - `pullRequestNumber` (数字): 拉取请求编号
 - `body` (字符串): 评论内容
 - `filePath` (字符串，可选): 行评论的文件路径
 - `line` (数字，可选): 行评论的行号
-- `provider` (字符串，可选): "github" 或 "gitlab"（默认："github"）
+- `provider` (字符串，可选): "github" 或 "gitlab"（默认："gitlab"）
 
 **示例：**
 ```json
@@ -227,8 +227,8 @@ gitlab-review-mcp \
 获取仓库信息。
 
 **参数：**
-- `repository` (字符串): 仓库格式 "owner/repo"
-- `provider` (字符串，可选): "github" 或 "gitlab"（默认："github"）
+- `repository` (字符串): 仓库格式 "owner/repo"，或 GitLab 项目路径如 "group/project"
+- `provider` (字符串，可选): "github" 或 "gitlab"（默认："gitlab"）
 
 **示例：**
 ```json
@@ -268,9 +268,9 @@ gitlab-review-mcp \
 获取拉取请求中已更改的文件列表。
 
 **参数：**
-- `repository` (字符串): 仓库格式 "owner/repo"
+- `repository` (字符串): 仓库格式 "owner/repo"，或 GitLab 项目路径如 "group/project"
 - `pullRequestNumber` (数字): 拉取请求编号
-- `provider` (字符串，可选): "github" 或 "gitlab"（默认："github"）
+- `provider` (字符串，可选): "github" 或 "gitlab"（默认："gitlab"）
 
 **示例：**
 ```json

@@ -27,9 +27,13 @@ export class ApiClient {
       requestHeaders['Authorization'] = `Bearer ${this.token}`;
     }
 
+    // Ensure no double slashes in URL by properly joining baseURL and endpoint
+    const baseUrl = this.baseURL.endsWith('/') ? this.baseURL.slice(0, -1) : this.baseURL;
+    const path = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+
     const config = {
       method,
-      url: `${this.baseURL}/${endpoint}`,
+      url: `${baseUrl}/${path}`,
       headers: requestHeaders,
       timeout,
       data,
