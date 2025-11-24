@@ -1,5 +1,21 @@
 # 更新日志
 
+## [1.0.26] - 2025-11-24
+
+### 🆕 新功能
+- 新增 `get_merge_request_changes` 工具，兼容旧版 MCP 客户端的 GitLab MR 变更查询能力
+- `get_pull_request_files` 支持更多参数别名与工作目录自动检测，GitHub/GitLab 调用更灵活
+
+### 🔧 改进
+- 引入统一的 `enhanceGitlabMergeRequestContext`，可从 MR URL、SSH/HTTPS 仓库链接、projectPath 等多种输入中自动解析项目及 IID
+- 扩大参数别名覆盖面，支持 `projectPath`、`mergeRequestUrl` 等字段自动补全
+
+### 🐛 Bug 修复
+- 将关键日志改为 `stderr` 输出，避免客户端解析 STDOUT JSON 时遇到 `Unexpected token` 错误
+- 修复 404 场景下项目解析 fallback 未触发的问题，提高 GitLab 项目解析成功率
+
+---
+
 ## [1.0.24] - 2025-11-24
 
 ### 🐛 Bug 修复

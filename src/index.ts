@@ -322,17 +322,21 @@ class CodeReviewMCPServer {
           },
           {
             name: 'get_pull_request_files',
-            description: 'Get list of files changed in a pull request',
+            description: 'Get list of files changed in a pull request or merge request',
             inputSchema: {
               type: 'object',
               properties: {
                 repository: {
                   type: 'string',
-                  description: 'Repository in format "owner/repo"',
+                  description: 'Repository/project identifier (e.g., "owner/repo" or "group/project"). Optional if workingDirectory is provided.',
                 },
                 pullRequestNumber: {
-                  type: 'number',
-                  description: 'Pull request number',
+                  type: ['number', 'string'],
+                  description: 'Pull request number (IID). Optional if mergeRequestIid is provided.',
+                },
+                mergeRequestIid: {
+                  type: ['number', 'string'],
+                  description: 'Merge request IID (GitLab). Optional if pullRequestNumber is provided.',
                 },
                 provider: {
                   type: 'string',
@@ -340,8 +344,54 @@ class CodeReviewMCPServer {
                   description: 'Git provider (github or gitlab)',
                   default: 'gitlab',
                 },
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Local repository path for auto-detecting project ID (aliases: working_directory, cwd)',
+                },
+                remoteName: {
+                  type: 'string',
+                  description: 'Git remote name used for auto-detecting the project ID',
+                  default: 'origin',
+                },
               },
-              required: ['repository', 'pullRequestNumber'],
+              required: [],
+            },
+          },
+          {
+            name: 'get_merge_request_changes',
+            description: 'Get merge request changes (GitLab compatibility alias)',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                repository: {
+                  type: 'string',
+                  description: 'Repository/project identifier (e.g., "group/project"). Optional if workingDirectory is provided.',
+                },
+                pullRequestNumber: {
+                  type: ['number', 'string'],
+                  description: 'Pull/MR number (IID). Optional if mergeRequestIid is provided.',
+                },
+                mergeRequestIid: {
+                  type: ['number', 'string'],
+                  description: 'Merge request IID (GitLab). Optional if pullRequestNumber is provided.',
+                },
+                provider: {
+                  type: 'string',
+                  enum: ['github', 'gitlab'],
+                  description: 'Git provider (default gitlab)',
+                  default: 'gitlab',
+                },
+                workingDirectory: {
+                  type: 'string',
+                  description: 'Local repository path for auto-detecting project ID (aliases: working_directory, cwd)',
+                },
+                remoteName: {
+                  type: 'string',
+                  description: 'Git remote name used for auto-detecting the project ID',
+                  default: 'origin',
+                },
+              },
+              required: [],
             },
           },
           {
@@ -496,6 +546,8 @@ class CodeReviewMCPServer {
             return await this.analyzeFilesBatch(args);
           case 'get_pull_request_files':
             return await this.getPullRequestFiles(args);
+          case 'get_merge_request_changes':
+            return await this.getMergeRequestChanges(args);
           case 'get_server_config':
             return await this.getServerConfig();
           case 'get_merge_request':
@@ -538,17 +590,18 @@ class CodeReviewMCPServer {
       this.coerceToString(this.getArgumentValue(args, ['provider'])) ??
       'gitlab';
 
-    const repository = this.coerceToString(
+    let repository = this.coerceToString(
       this.getArgumentValue(args, [
         'repository',
         'project',
         'projectId',
         'project_id',
         'project_path',
+        'projectPath',
       ])
     );
 
-    const pullRequestIdentifier = this.coerceToString(
+    let pullRequestIdentifier = this.coerceToString(
       this.getArgumentValue(args, [
         'pullRequestNumber',
         'pull_request_number',
@@ -560,6 +613,16 @@ class CodeReviewMCPServer {
         'merge_request_id',
       ])
     );
+
+    if (provider === 'gitlab') {
+      const enhancedContext = this.enhanceGitlabMergeRequestContext(args, {
+        projectId: repository,
+        mergeRequestIid: pullRequestIdentifier,
+      });
+      repository = enhancedContext.projectId ?? repository;
+      pullRequestIdentifier =
+        enhancedContext.mergeRequestIid ?? pullRequestIdentifier;
+    }
 
     if (!pullRequestIdentifier) {
       throw new Error(
@@ -624,10 +687,51 @@ class CodeReviewMCPServer {
   }
 
   private async fetchCodeDiff(args: any) {
-    const { repository, pullRequestNumber, commitSha, filePath, provider = 'gitlab' } = args;
+    const provider =
+      this.coerceToString(this.getArgumentValue(args, ['provider'])) ??
+      'gitlab';
+    let repository = this.coerceToString(
+      this.getArgumentValue(args, [
+        'repository',
+        'project',
+        'projectId',
+        'project_id',
+        'project_path',
+        'projectPath',
+      ])
+    );
+    let pullRequestNumber = this.coerceToString(
+      this.getArgumentValue(args, [
+        'pullRequestNumber',
+        'pull_request_number',
+        'mergeRequestIid',
+        'merge_request_iid',
+        'mergeRequestId',
+        'merge_request_id',
+      ])
+    );
+    const commitSha = this.coerceToString(
+      this.getArgumentValue(args, ['commitSha', 'commit_sha', 'sha'])
+    );
+    const filePath = this.coerceToString(
+      this.getArgumentValue(args, ['filePath', 'file_path', 'path'])
+    );
+
+    if (provider === 'gitlab') {
+      const enhancedContext = this.enhanceGitlabMergeRequestContext(args, {
+        projectId: repository,
+        mergeRequestIid: pullRequestNumber,
+      });
+      repository = enhancedContext.projectId ?? repository;
+      pullRequestNumber =
+        enhancedContext.mergeRequestIid ?? pullRequestNumber;
+    }
 
     let endpoint: string;
     if (provider === 'github') {
+      if (!repository) {
+        throw new Error('Repository is required for GitHub requests');
+      }
       if (pullRequestNumber) {
         endpoint = `repos/${repository}/pulls/${pullRequestNumber}/files`;
       } else if (commitSha) {
@@ -636,10 +740,17 @@ class CodeReviewMCPServer {
         throw new Error('Either pullRequestNumber or commitSha must be provided');
       }
     } else if (provider === 'gitlab') {
+      if (!repository) {
+        throw new Error('Project ID or path is required for GitLab requests');
+      }
       if (pullRequestNumber) {
-        endpoint = `projects/${encodeURIComponent(repository)}/merge_requests/${pullRequestNumber}/changes`;
+        endpoint = `projects/${encodeURIComponent(
+          repository
+        )}/merge_requests/${pullRequestNumber}/changes`;
       } else if (commitSha) {
-        endpoint = `projects/${encodeURIComponent(repository)}/repository/commits/${commitSha}/diff`;
+        endpoint = `projects/${encodeURIComponent(
+          repository
+        )}/repository/commits/${commitSha}/diff`;
       } else {
         throw new Error('Either pullRequestNumber or commitSha must be provided');
       }
@@ -652,10 +763,11 @@ class CodeReviewMCPServer {
 
     // Filter by file path if specified
     if (filePath && Array.isArray(data)) {
-      data = data.filter((file: any) => 
-        file.filename === filePath || 
-        file.new_path === filePath || 
-        file.old_path === filePath
+      data = data.filter(
+        (file: any) =>
+          file.filename === filePath ||
+          file.new_path === filePath ||
+          file.old_path === filePath
       );
     }
 
@@ -670,32 +782,94 @@ class CodeReviewMCPServer {
   }
 
   private async addReviewComment(args: any) {
-    const { repository, pullRequestNumber, body, filePath, line, provider = 'gitlab' } = args;
+    const provider =
+      this.coerceToString(this.getArgumentValue(args, ['provider'])) ??
+      'gitlab';
+    let repository = this.coerceToString(
+      this.getArgumentValue(args, [
+        'repository',
+        'project',
+        'projectId',
+        'project_id',
+        'project_path',
+        'projectPath',
+      ])
+    );
+    let pullRequestNumber = this.coerceToString(
+      this.getArgumentValue(args, [
+        'pullRequestNumber',
+        'pull_request_number',
+        'pullRequestId',
+        'pull_request_id',
+        'mergeRequestIid',
+        'merge_request_iid',
+        'mergeRequestId',
+        'merge_request_id',
+        'iid',
+      ])
+    );
+    const body = this.coerceToString(this.getArgumentValue(args, ['body']));
+    const filePath = this.coerceToString(
+      this.getArgumentValue(args, ['filePath', 'file_path'])
+    );
+    const line = this.coerceToNumber(
+      this.getArgumentValue(args, ['line', 'lineNumber', 'line_number'])
+    );
+
+    if (!body) {
+      throw new Error('Comment body is required');
+    }
+
+    if (provider === 'gitlab') {
+      const enhancedContext = this.enhanceGitlabMergeRequestContext(args, {
+        projectId: repository,
+        mergeRequestIid: pullRequestNumber,
+      });
+      repository = enhancedContext.projectId ?? repository;
+      pullRequestNumber =
+        enhancedContext.mergeRequestIid ?? pullRequestNumber;
+    }
+
+    if (!pullRequestNumber) {
+      throw new Error(
+        'Pull request or merge request identifier is required to add a comment'
+      );
+    }
 
     let endpoint: string;
     let requestData: any;
 
     if (provider === 'github') {
-      if (filePath && line) {
+      if (!repository) {
+        throw new Error('Repository is required for GitHub requests');
+      }
+      if (filePath && line !== undefined) {
         endpoint = `repos/${repository}/pulls/${pullRequestNumber}/reviews`;
         requestData = {
           body,
           event: 'COMMENT',
-          comments: [{
-            path: filePath,
-            line,
-            body,
-          }],
+          comments: [
+            {
+              path: filePath,
+              line,
+              body,
+            },
+          ],
         };
       } else {
         endpoint = `repos/${repository}/issues/${pullRequestNumber}/comments`;
         requestData = { body };
       }
     } else if (provider === 'gitlab') {
-      endpoint = `projects/${encodeURIComponent(repository)}/merge_requests/${pullRequestNumber}/notes`;
+      if (!repository) {
+        throw new Error('Project ID or path is required for GitLab requests');
+      }
+      endpoint = `projects/${encodeURIComponent(
+        repository
+      )}/merge_requests/${pullRequestNumber}/notes`;
       requestData = { body };
-      
-      if (filePath && line) {
+
+      if (filePath && line !== undefined) {
         requestData.position = {
           position_type: 'text',
           new_path: filePath,
@@ -840,13 +1014,61 @@ class CodeReviewMCPServer {
   }
 
   private async getPullRequestFiles(args: any) {
-    const { repository, pullRequestNumber, provider = 'gitlab' } = args;
+    const provider =
+      this.coerceToString(this.getArgumentValue(args, ['provider'])) ??
+      'gitlab';
+    let repository = this.coerceToString(
+      this.getArgumentValue(args, [
+        'repository',
+        'project',
+        'projectId',
+        'project_id',
+        'project_path',
+        'projectPath',
+      ])
+    );
+    let pullRequestNumber = this.coerceToString(
+      this.getArgumentValue(args, [
+        'pullRequestNumber',
+        'pull_request_number',
+        'pullRequestId',
+        'pull_request_id',
+        'mergeRequestIid',
+        'merge_request_iid',
+        'mergeRequestId',
+        'merge_request_id',
+      ])
+    );
+
+    if (provider === 'gitlab') {
+      const enhancedContext = this.enhanceGitlabMergeRequestContext(args, {
+        projectId: repository,
+        mergeRequestIid: pullRequestNumber,
+      });
+      repository = enhancedContext.projectId ?? repository;
+      pullRequestNumber =
+        enhancedContext.mergeRequestIid ?? pullRequestNumber;
+    }
+
+    if (!pullRequestNumber) {
+      throw new Error(
+        'Pull request or merge request identifier is required to list files'
+      );
+    }
 
     let endpoint: string;
     if (provider === 'github') {
+      if (!repository) {
+        throw new Error('Repository is required for GitHub requests');
+      }
       endpoint = `repos/${repository}/pulls/${pullRequestNumber}/files`;
     } else if (provider === 'gitlab') {
-      endpoint = `projects/${encodeURIComponent(repository)}/merge_requests/${pullRequestNumber}/changes`;
+      if (!repository) {
+        throw new Error('Project ID or path is required for GitLab requests');
+      }
+      endpoint = `projects/${encodeURIComponent(
+        repository
+      )}/merge_requests/${pullRequestNumber}/changes`;
     } else {
       throw new Error(`Unsupported provider: ${provider}`);
     }
@@ -897,6 +1119,10 @@ class CodeReviewMCPServer {
     };
   }
 
+  private async getMergeRequestChanges(args: any) {
+    return this.getPullRequestFiles(args);
+  }
+
   private async getServerConfig() {
     const apiInfo = this.apiClient.getApiInfo();
     const isHealthy = await this.apiClient.healthCheck();
@@ -919,24 +1145,37 @@ class CodeReviewMCPServer {
   }
 
   private async getMergeRequest(args: any) {
-    const rawProjectIdInput = this.coerceToString(
+    let rawProjectIdInput = this.coerceToString(
       this.getArgumentValue(args, [
         'projectId',
         'project_id',
         'project',
         'projectPath',
         'project_path',
+        'repository',
+        'repository_path',
       ])
     );
-    const mergeRequestIid = this.coerceToString(
+    let mergeRequestIid = this.coerceToString(
       this.getArgumentValue(args, [
         'mergeRequestIid',
         'merge_request_iid',
         'mergeRequestIID',
         'merge_request_IID',
         'iid',
+        'pullRequestNumber',
+        'pull_request_number',
+        'mergeRequestId',
+        'merge_request_id',
       ])
     );
+
+    const enhancedContext = this.enhanceGitlabMergeRequestContext(args, {
+      projectId: rawProjectIdInput,
+      mergeRequestIid,
+    });
+    rawProjectIdInput = enhancedContext.projectId ?? rawProjectIdInput;
+    mergeRequestIid = enhancedContext.mergeRequestIid ?? mergeRequestIid;
 
     if (!mergeRequestIid) {
       return {
@@ -994,7 +1233,7 @@ class CodeReviewMCPServer {
       this.formatProjectResolutionDetails(projectResolution);
 
     if (projectResolution.source && projectResolution.source !== 'input') {
-      console.log(
+      console.warn(
         `ℹ️ Resolved project ID via ${projectResolution.source}: ${resolvedRawProjectId}`
       );
     }
@@ -1002,7 +1241,7 @@ class CodeReviewMCPServer {
     try {
       // Fetch merge request details from GitLab API
       const endpoint = `projects/${normalizedProjectId}/merge_requests/${mergeRequestIid}`;
-      console.log(`🔍 Fetching merge request at endpoint: ${endpoint}`);
+      console.warn(`🔍 Fetching merge request at endpoint: ${endpoint}`);
       
       const response = await this.makeApiRequest(endpoint);
 
@@ -1246,7 +1485,7 @@ class CodeReviewMCPServer {
       this.formatProjectResolutionDetails(projectResolution);
 
     if (projectResolution.source && projectResolution.source !== 'input') {
-      console.log(
+      console.warn(
         `ℹ️ Resolved project ID via ${projectResolution.source}: ${resolvedRawProjectId}`
       );
     }
@@ -1283,7 +1522,7 @@ class CodeReviewMCPServer {
 
     try {
       const endpoint = `projects/${normalizedProjectId}/merge_requests`;
-      console.log(`🚀 Creating merge request at endpoint: ${endpoint}`);
+      console.warn(`🚀 Creating merge request at endpoint: ${endpoint}`);
 
       const response = await this.makeApiRequest(endpoint, {
         method: 'POST',
@@ -1660,6 +1899,160 @@ class CodeReviewMCPServer {
     } catch (error) {
       return {};
     }
+  }
+
+  private enhanceGitlabMergeRequestContext(
+    args: any,
+    context: { projectId?: string | null; mergeRequestIid?: string | null }
+  ): { projectId?: string; mergeRequestIid?: string } {
+    const mergeRequestUrl = this.coerceToString(
+      this.getArgumentValue(args, [
+        'mergeRequestUrl',
+        'merge_request_url',
+        'mergeRequestLink',
+        'merge_request_link',
+        'mrUrl',
+        'mr_url',
+        'pullRequestUrl',
+        'pull_request_url',
+        'prUrl',
+        'pr_url',
+        'url',
+      ])
+    );
+
+    const projectUrl = this.coerceToString(
+      this.getArgumentValue(args, [
+        'projectUrl',
+        'project_url',
+        'repositoryUrl',
+        'repository_url',
+        'repoUrl',
+        'repo_url',
+        'gitlabUrl',
+        'gitlab_url',
+      ])
+    );
+
+    const candidates = [
+      context.projectId,
+      mergeRequestUrl,
+      projectUrl,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    let projectId = context.projectId ?? undefined;
+    let mergeRequestIid = context.mergeRequestIid ?? undefined;
+
+    for (const candidate of candidates) {
+      const parsed = this.parseGitlabReferenceString(candidate);
+      if (!parsed) {
+        continue;
+      }
+
+      if (parsed.projectPath && !projectId) {
+        projectId = parsed.projectPath;
+      }
+      if (parsed.mergeRequestIid && !mergeRequestIid) {
+        mergeRequestIid = parsed.mergeRequestIid;
+      }
+
+      if (projectId && mergeRequestIid) {
+        break;
+      }
+    }
+
+    return { projectId, mergeRequestIid };
+  }
+
+  private parseGitlabReferenceString(
+    value?: string | null
+  ): { projectPath?: string; mergeRequestIid?: string } | null {
+    if (!value) {
+      return null;
+    }
+
+    let trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    // Remove surrounding quotes that sometimes sneak in from CLI tools
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      trimmed = trimmed.slice(1, -1);
+    }
+
+    let mergeRequestIid: string | undefined;
+
+    const normalizePath = (input: string) => {
+      let cleaned = input.replace(/^\/+/, '').replace(/[?#].*$/, '');
+      cleaned = cleaned.replace(/\.git$/i, '');
+
+      if (!cleaned) {
+        return '';
+      }
+
+      const segments = cleaned
+        .split('/')
+        .filter(Boolean)
+        .map((segment) => {
+          try {
+            return decodeURIComponent(segment);
+          } catch {
+            return segment;
+          }
+        });
+
+      return segments.join('/');
+    };
+
+    const parsePotentialUrl = (input: string): string => {
+      try {
+        const parsedUrl = new URL(input);
+        return parsedUrl.pathname || '';
+      } catch {
+        return input;
+      }
+    };
+
+    const parseSshPath = (input: string): string => {
+      const sshMatch = input.match(/^git@[^:]+:(.+)$/);
+      return sshMatch ? sshMatch[1] : input;
+    };
+
+    const extractMergeRequestFromPath = (input: string) => {
+      const mrMatch = input.match(/(.+?)\/-\/merge_requests\/(\d+)(?:\/.*)?$/i);
+      if (mrMatch) {
+        return { path: mrMatch[1], iid: mrMatch[2] };
+      }
+
+      const fallbackMatch = input.match(/(.+?)\/merge_requests\/(\d+)(?:\/.*)?$/i);
+      if (fallbackMatch) {
+        return { path: fallbackMatch[1], iid: fallbackMatch[2] };
+      }
+
+      return { path: input };
+    };
+
+    let pathCandidate = parsePotentialUrl(trimmed);
+    pathCandidate = parseSshPath(pathCandidate);
+
+    const extracted = extractMergeRequestFromPath(pathCandidate);
+    if (extracted.iid) {
+      mergeRequestIid = extracted.iid;
+    }
+
+    const normalizedPath = normalizePath(extracted.path);
+    if (!normalizedPath && !mergeRequestIid) {
+      return null;
+    }
+
+    return {
+      projectPath: normalizedPath || undefined,
+      mergeRequestIid,
+    };
   }
 
   private getArgumentValue<T = any>(args: Record<string, any> | undefined, keys: string[], defaultValue?: T): T | undefined {
