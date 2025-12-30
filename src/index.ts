@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -19,6 +18,7 @@ import { execSync } from 'child_process';
 import { CodeAnalyzer } from './code-analyzer.js';
 import { ApiClient } from './api-client.js';
 import { CodeAnalysisResult, ApiRequestOptions, CreateMergeRequestOptions, MergeRequestResult, GitBranchInfo, GitRemoteInfo, ProjectInfo } from './types.js';
+import { SafeStdioServerTransport } from './safe-stdio-transport.js';
 
 // Load environment variables
 config();
@@ -2639,7 +2639,7 @@ class CodeReviewMCPServer {
   }
 
   async run(): Promise<void> {
-    const transport = new StdioServerTransport();
+    const transport = new SafeStdioServerTransport();
     await this.server.connect(transport);
   }
 }
